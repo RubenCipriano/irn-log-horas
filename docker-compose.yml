@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  website-log-horas:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: website-log-horas
+    ports:
+      - "3700:3700"
+    environment:
+      NODE_ENV: production
+      PORT: 3700
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3700"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
