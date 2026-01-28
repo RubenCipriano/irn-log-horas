@@ -21,8 +21,8 @@ services:
     volumes:
       - ./logs:/app/logs
     networks:
-      - app-network
+      - nginx_backend
 
 networks:
-  app-network:
+  nginx_backend:
     driver: bridge
