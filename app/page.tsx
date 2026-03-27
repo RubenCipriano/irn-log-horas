@@ -2,12 +2,9 @@
 
 import { useEffect, useState } from "react";
 import Calendar from "@/components/Calendar";
+import type { TodoItem, TimeEntriesData, SprintInfo } from "@/types";
 
-type TodoItem = {
-  id: string;
-  title: string;
-  date: Date;
-};
+const EMPTY_TIME_ENTRIES: TimeEntriesData = { byDay: {}, byTask: {}, byDayTask: {} };
 
 export default function Home() {
   const [url, setUrl] = useState("https://projetos.irn.justica.gov.pt/");
@@ -16,7 +13,8 @@ export default function Home() {
   const [tokenInput, setTokenInput] = useState("");
   const [error, setError] = useState("");
   const [todos, setTodos] = useState<TodoItem[]>([]);
-  const [timeEntries, setTimeEntries] = useState<{ [key: string]: number }>({});
+  const [timeEntries, setTimeEntries] = useState<TimeEntriesData>(EMPTY_TIME_ENTRIES);
+  const [sprints, setSprints] = useState<SprintInfo[]>([]);
 
   useEffect(() => {
     const savedToken = localStorage.getItem("openproject_token");
@@ -46,13 +44,14 @@ export default function Home() {
         const data = await response.json();
         const todosWithDates = (data.todos || []).map((todo: any) => ({
           ...todo,
-          date: new Date(todo.date),
+          date: todo.date ? new Date(todo.date) : null,
         }));
         setTodos(todosWithDates);
-        setTimeEntries(data.timeEntries || {});
+        setTimeEntries(data.timeEntries || EMPTY_TIME_ENTRIES);
+        setSprints(data.sprints || []);
       }
-    } catch (err) {
-      console.error("Failed to fetch todos:", err);
+    } catch {
+      // failed to fetch todos
     } finally {
       setIsLoading(false);
     }
@@ -99,7 +98,8 @@ export default function Home() {
 
       setToken(tokenInput);
       setTodos(todosWithDates);
-      setTimeEntries(data.timeEntries || {});
+      setTimeEntries(data.timeEntries || EMPTY_TIME_ENTRIES);
+      setSprints(data.sprints || []);
       setTokenInput("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to authenticate with OpenProject");
@@ -146,11 +146,13 @@ export default function Home() {
             </div>
           </div>
         </div>
-        <Calendar 
-          todoList={todos} 
-          timeEntries={timeEntries} 
-          isLoading={isLoading} 
-          onMonthChange={() => fetchTodos(token, url)} 
+        <Calendar
+          todoList={todos}
+          timeEntries={timeEntries}
+          sprints={sprints}
+          isLoading={isLoading}
+          onMonthChange={() => fetchTodos(token, url)}
+          onTimeEntriesUpdate={(updater) => setTimeEntries(updater)}
           authToken={token}
           authUrl={url}
         />
@@ -208,7 +210,7 @@ export default function Home() {
         </button>
 
         <p className="mt-4 text-xs text-slate-500 dark:text-slate-400">
-          To get your API token, log in to OpenProject, go to your profile settings, and create a new API token under "Access tokens".
+          To get your API token, log in to OpenProject, go to your profile settings, and create a new API token under &ldquo;Access tokens&rdquo;.
         </p>
       </div>
     </main>

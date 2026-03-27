@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
       "Content-Type": "application/json",
     };
 
-    console.log("[add-time-entries] Received:", { date, entriesCount: entries.length, entries });
+    // console.log("[add-time-entries] Received:", { date, entriesCount: entries.length, entries });
 
     let savedCount = 0;
     const errors: string[] = [];
@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
     for (const entry of entries) {
       try {
         const isoDuration = hoursToISO8601Duration(entry.spentTime);
-        console.log(`[add-time-entries] Saving entry:`, entry, `→ ${isoDuration}`);
+        // console.log(`[add-time-entries] Saving entry:`, entry, `→ ${isoDuration}`);
         
         const response = await fetch(`${baseUrl}/api/v3/time_entries`, {
           method: "POST",
@@ -71,7 +71,7 @@ export async function POST(request: NextRequest) {
         });
 
         const responseText = await response.text();
-        console.log(`[add-time-entries] Response for ${entry.workPackageId}:`, response.status, responseText.substring(0, 150));
+        // console.log(`[add-time-entries] Response for ${entry.workPackageId}:`, response.status, responseText.substring(0, 150));
 
         if (response.ok) {
           savedCount++;
@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
       }
     }
     
-    console.log("[add-time-entries] Final result:", { savedCount, totalEntries: entries.length, errors });
+    // console.log("[add-time-entries] Final result:", { savedCount, totalEntries: entries.length, errors });
 
     return NextResponse.json({
       success: true,

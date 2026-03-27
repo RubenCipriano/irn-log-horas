@@ -50,9 +50,13 @@ export async function POST(request: NextRequest) {
 
     const user = await userResponse.json();
 
-    // Fetch work packages (tasks) assigned to the user
+    // Fetch work packages (tasks) assigned to the user — only open status
+    const wpFilters = encodeURIComponent(JSON.stringify([
+      { assignee: { operator: "=", values: [user.id.toString()] } },
+      { status: { operator: "o", values: [] } }, // "o" = open statuses only
+    ]));
     const workPackagesResponse = await fetch(
-      `${baseUrl}/api/v3/work_packages?filters=[{"assignee":{"operator":"=","values":["${user.id}"]}}]&pageSize=1000`,
+      `${baseUrl}/api/v3/work_packages?filters=${wpFilters}&pageSize=1000`,
       { headers }
     );
 
@@ -66,10 +70,81 @@ export async function POST(request: NextRequest) {
     const todos = workPackages.map((wp: any) => ({
       id: wp.id.toString(),
       title: wp.subject,
-      date: wp.createdAt ? new Date(wp.createdAt) : null,
+      date: wp.startDate || wp.dueDate || wp.createdAt || null,
       url: wp._links?.self?.href,
-      status: wp._links?.status?.title || "Unknown",
-    })).filter((todo: any) => todo.date !== null);
+      status: wp._links?.status?.title || wp._embedded?.status?.name || "Unknown",
+      sprint: wp._links?.version?.title || undefined,
+      updatedAt: wp.updatedAt ? wp.updatedAt.split("T")[0] : undefined,
+      isClosed: false, // API already filters open only
+    }));
+
+    // Fetch activity history for each task in parallel to determine activeFrom/activeUntil
+    const terminalStatuses = ["desenvolvido", "developed", "fechado", "closed", "rejected", "rejeitado"];
+    const todosWithHistory = await Promise.all(todos.map(async (todo: any) => {
+      try {
+        const activitiesRes = await fetch(`${baseUrl}/api/v3/work_packages/${todo.id}/activities`, { headers });
+        if (!activitiesRes.ok) return todo;
+
+        const activitiesData = await activitiesRes.json();
+        const elements = activitiesData._embedded?.elements || [];
+
+        let activeFrom: string | null = null;
+        let activeUntil: string | null = null;
+
+        for (const entry of elements) {
+          const entryDate = entry.createdAt?.split("T")[0];
+          if (!entryDate) continue;
+
+          const details = entry._embedded?.details || entry.details || [];
+          for (const detail of details) {
+            if (detail.property === "status" || detail.fieldName === "status" || detail._type === "StatusChangedActivity") {
+              if (!activeFrom) activeFrom = entryDate;
+              const newStatus = (detail._links?.newValue?.title || detail.newValue || "").toLowerCase();
+              if (terminalStatuses.some(s => newStatus.includes(s))) {
+                activeUntil = entryDate;
+              } else {
+                // If status changed back from terminal to active, clear activeUntil
+                activeUntil = null;
+              }
+            }
+          }
+        }
+
+        // Fallback: use createdAt if no status history found
+        if (!activeFrom && todo.date) {
+          activeFrom = typeof todo.date === "string" ? todo.date.split("T")[0] : null;
+        }
+
+        return { ...todo, activeFrom, activeUntil };
+      } catch {
+        return todo;
+      }
+    }));
+
+    // Fetch sprint/version details (dates) from unique version hrefs
+    const versionHrefs = new Set<string>();
+    workPackages.forEach((wp: any) => {
+      const href = wp._links?.version?.href;
+      if (href) versionHrefs.add(href);
+    });
+
+    const sprints: { id: string; name: string; startDate: string | null; endDate: string | null }[] = [];
+    for (const href of versionHrefs) {
+      try {
+        const versionResponse = await fetch(`${baseUrl}${href}`, { headers });
+        if (versionResponse.ok) {
+          const version = await versionResponse.json();
+          sprints.push({
+            id: version.id?.toString() || href.split("/").pop() || "",
+            name: version.name || version._links?.self?.title || "",
+            startDate: version.startDate || null,
+            endDate: version.endDate || null,
+          });
+        }
+      } catch {
+        // Skip versions that fail to fetch
+      }
+    }
 
     // Fetch time entries for the user
     const timeEntriesResponse = await fetch(
@@ -77,24 +152,54 @@ export async function POST(request: NextRequest) {
       { headers }
     );
 
-    let timeEntries: { [key: string]: number } = {};
+    const byDay: { [key: string]: number } = {};
+    const byTask: { [key: string]: { totalHours: number; entryCount: number; lastUsed: string } } = {};
+    const byDayTask: { [key: string]: { [key: string]: number } } = {};
+
     if (timeEntriesResponse.ok) {
       const timeEntriesData = await timeEntriesResponse.json();
       const entries = timeEntriesData._embedded?.elements || [];
-      
+
       entries.forEach((entry: any) => {
-        // Parse ISO 8601 duration format (PT8H, PT30M, etc)
         const hours = entry.hours ? parseIsoDuration(entry.hours) : 0;
-        
-        if (hours > 0) {
-          // Use spentOn property for the date
-          const dateStr = entry.spentOn;
-          if (dateStr) {
-            const key = dateStr; // Format should already be YYYY-MM-DD
-            timeEntries[key] = (timeEntries[key] || 0) + hours;
-          }
+        if (hours <= 0) return;
+
+        const dateStr = entry.spentOn;
+        if (!dateStr) return;
+
+        // Aggregate by day
+        byDay[dateStr] = (byDay[dateStr] || 0) + hours;
+
+        // Extract work package ID from href (e.g., "/api/v3/work_packages/4521")
+        const wpHref = entry._links?.workPackage?.href || "";
+        const wpId = wpHref.split("/").pop();
+        if (!wpId) return;
+
+        // Aggregate by task
+        if (!byTask[wpId]) {
+          byTask[wpId] = { totalHours: 0, entryCount: 0, lastUsed: dateStr };
         }
+        byTask[wpId].totalHours += hours;
+        byTask[wpId].entryCount += 1;
+        if (dateStr > byTask[wpId].lastUsed) {
+          byTask[wpId].lastUsed = dateStr;
+        }
+
+        // Aggregate by day+task
+        if (!byDayTask[dateStr]) byDayTask[dateStr] = {};
+        byDayTask[dateStr][wpId] = (byDayTask[dateStr][wpId] || 0) + hours;
       });
+    }
+
+    // Calculate avgHoursPerDay for each task
+    const byTaskWithAvg: { [key: string]: { totalHours: number; entryCount: number; lastUsed: string; avgHoursPerDay: number } } = {};
+    for (const [taskId, data] of Object.entries(byTask)) {
+      // Count unique days this task was logged
+      const uniqueDays = Object.keys(byDayTask).filter(day => byDayTask[day]?.[taskId]).length;
+      byTaskWithAvg[taskId] = {
+        ...data,
+        avgHoursPerDay: uniqueDays > 0 ? Math.round((data.totalHours / uniqueDays) * 2) / 2 : 0,
+      };
     }
 
     const response = {
@@ -104,8 +209,13 @@ export async function POST(request: NextRequest) {
         name: user.name,
         email: user.email,
       },
-      todos,
-      timeEntries,
+      todos: todosWithHistory,
+      timeEntries: {
+        byDay,
+        byTask: byTaskWithAvg,
+        byDayTask,
+      },
+      sprints,
     };
 
     return NextResponse.json(response);

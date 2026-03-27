@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(npm install:*)",
+      "Bash(npx next:*)",
+      "Bash(xargs grep:*)",
+      "Bash(cd /c/Users/ruben/Documents/\"Horas IRN\"/irn-log-horas)",
+      "Bash(xargs -I {} bash -c \"echo -n \"\"{} - \"\"; wc -l < \"\"{}\"\"\")"
+    ]
+  }
+}
