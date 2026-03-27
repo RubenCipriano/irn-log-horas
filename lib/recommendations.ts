@@ -110,7 +110,8 @@ export function calculateSmartRecommendations({
   }
 
   // Scale all task hours to fill remaining hours exactly
-  const nonMeetingsRecs = recommendations.filter(r => r.taskId !== meetingsTask?.id);
+  const meetingsId = meetingsTask?.id || meetingsTaskId;
+  const nonMeetingsRecs = recommendations.filter(r => r.taskId !== meetingsId);
   const rawTotal = nonMeetingsRecs.reduce((sum, r) => sum + r.hours, 0);
 
   if (rawTotal > 0 && remaining > 0) {
@@ -121,19 +122,42 @@ export function calculateSmartRecommendations({
       let scaled = rec.hours * scale;
       // Add deterministic variation ±0.5h per task (based on day + task index)
       if (dayKey && nonMeetingsRecs.length > 1) {
-        const variation = (((seed + i * 7) % 3) - 1) * 0.5; // -0.5, 0, or +0.5
+        const variation = (((seed + i * 7) % 3) - 1) * 0.5;
         scaled += variation;
       }
       rec.hours = Math.max(Math.round(scaled * 2) / 2, 0.5);
     }
-    // Fix rounding: adjust last task to match remaining exactly
-    const newTotal = nonMeetingsRecs.reduce((sum, r) => sum + r.hours, 0);
-    const diff = Math.round((remaining - newTotal) * 2) / 2;
-    if (diff !== 0 && nonMeetingsRecs.length > 0) {
-      nonMeetingsRecs[nonMeetingsRecs.length - 1].hours = Math.max(
-        0.5,
-        nonMeetingsRecs[nonMeetingsRecs.length - 1].hours + diff
-      );
+    // Fix rounding: iteratively adjust 0.5h at a time until total matches remaining
+    let currentTotal = nonMeetingsRecs.reduce((sum, r) => sum + r.hours, 0);
+    let gap = Math.round((remaining - currentTotal) * 2) / 2;
+    while (gap !== 0) {
+      // Sort: reduce from largest tasks, increase on smallest
+      const sorted = [...nonMeetingsRecs].sort((a, b) => gap > 0 ? a.hours - b.hours : b.hours - a.hours);
+      let adjusted = false;
+      for (const rec of sorted) {
+        const newHours = rec.hours + (gap > 0 ? 0.5 : -0.5);
+        if (newHours >= 0.5) {
+          rec.hours = newHours;
+          adjusted = true;
+          break;
+        }
+      }
+      if (!adjusted) break;
+      currentTotal = nonMeetingsRecs.reduce((sum, r) => sum + r.hours, 0);
+      gap = Math.round((remaining - currentTotal) * 2) / 2;
+    }
+
+    // If still over budget (too many tasks at minimum 0.5h), deselect lowest-scored tasks
+    currentTotal = nonMeetingsRecs.filter(r => r.selected).reduce((sum, r) => sum + r.hours, 0);
+    if (currentTotal > remaining) {
+      // Deselect from lowest score first (end of array, since scored was sorted desc)
+      const selectedNonMeetings = nonMeetingsRecs.filter(r => r.selected);
+      for (let i = selectedNonMeetings.length - 1; i >= 0; i--) {
+        if (currentTotal <= remaining) break;
+        currentTotal -= selectedNonMeetings[i].hours;
+        selectedNonMeetings[i].selected = false;
+        selectedNonMeetings[i].hours = 0;
+      }
     }
   }
 

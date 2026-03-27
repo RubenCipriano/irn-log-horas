@@ -15,6 +15,15 @@ function parseIsoDuration(duration: string): number {
   return hours + minutes / 60;
 }
 
+// If current task status is terminal, set activeUntil = updatedAt
+function applyStatusFallback(todo: any, terminalStatuses: string[]) {
+  const currentStatus = (todo.status || "").toLowerCase();
+  if (terminalStatuses.some(s => currentStatus.includes(s)) && todo.updatedAt) {
+    return { ...todo, activeUntil: todo.updatedAt };
+  }
+  return todo;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -66,7 +75,7 @@ export async function POST(request: NextRequest) {
       workPackages = workPackagesData._embedded?.elements || [];
     }
 
-    // Transform work packages into todos
+    // Transform work packages into todos (activeFrom defaults to createdAt)
     const todos = workPackages.map((wp: any) => ({
       id: wp.id.toString(),
       title: wp.subject,
@@ -76,48 +85,86 @@ export async function POST(request: NextRequest) {
       sprint: wp._links?.version?.title || undefined,
       updatedAt: wp.updatedAt ? wp.updatedAt.split("T")[0] : undefined,
       isClosed: false, // API already filters open only
+      activeFrom: wp.createdAt ? wp.createdAt.split("T")[0] : null,
+      activeUntil: null as string | null,
     }));
 
-    // Fetch activity history for each task in parallel to determine activeFrom/activeUntil
-    const terminalStatuses = ["desenvolvido", "developed", "fechado", "closed", "rejected", "rejeitado"];
+    // Fetch activity history for each task in parallel to refine activeFrom/activeUntil
+    const terminalStatuses = ["desenvolvido", "developed", "fechado", "closed", "rejected", "rejeitado", "on hold", "onhold"];
     const todosWithHistory = await Promise.all(todos.map(async (todo: any) => {
       try {
         const activitiesRes = await fetch(`${baseUrl}/api/v3/work_packages/${todo.id}/activities`, { headers });
-        if (!activitiesRes.ok) return todo;
+        if (!activitiesRes.ok) {
+          // Fallback: if current status is terminal, use updatedAt as activeUntil
+          return applyStatusFallback(todo, terminalStatuses);
+        }
 
         const activitiesData = await activitiesRes.json();
         const elements = activitiesData._embedded?.elements || [];
 
-        let activeFrom: string | null = null;
+        let activeFrom: string | null = todo.activeFrom;
         let activeUntil: string | null = null;
+        let foundStatusChange = false;
 
         for (const entry of elements) {
           const entryDate = entry.createdAt?.split("T")[0];
           if (!entryDate) continue;
 
+          // Use creation activity date if available
+          if (entry._type?.includes("Creation")) {
+            if (!activeFrom || entryDate > activeFrom) activeFrom = entryDate;
+            continue;
+          }
+
+          // Check structured details for status changes
           const details = entry._embedded?.details || entry.details || [];
           for (const detail of details) {
-            if (detail.property === "status" || detail.fieldName === "status" || detail._type === "StatusChangedActivity") {
-              if (!activeFrom) activeFrom = entryDate;
+            const isStatusChange = detail.property === "status" || detail.fieldName === "status"
+              || detail._type === "StatusChangedActivity"
+              || (detail.raw && typeof detail.raw === "string" && detail.raw.toLowerCase().includes("status"));
+            if (isStatusChange) {
+              foundStatusChange = true;
               const newStatus = (detail._links?.newValue?.title || detail.newValue || "").toLowerCase();
               if (terminalStatuses.some(s => newStatus.includes(s))) {
                 activeUntil = entryDate;
               } else {
-                // If status changed back from terminal to active, clear activeUntil
                 activeUntil = null;
+              }
+            }
+          }
+
+          // Fallback: parse activity comment/note text for status changes
+          // OpenProject sometimes puts status changes as text like "Status changed from X to Y"
+          if (!foundStatusChange) {
+            const comment = (entry.comment?.raw || entry.note || "").toLowerCase();
+            const htmlComment = (entry.comment?.html || "").toLowerCase();
+            const texts = [comment, htmlComment];
+            for (const text of texts) {
+              // Match patterns like "situação alterado de X para Y" or "status changed from X to Y"
+              const ptMatch = text.match(/situa[çc][aã]o\s+alterad[oa]\s+de\s+.+?\s+para\s+(.+?)(\s|$|<)/);
+              const enMatch = text.match(/status\s+changed?\s+(?:from\s+.+?\s+to\s+)?(.+?)(\s|$|<)/);
+              const statusMatch = ptMatch || enMatch;
+              if (statusMatch) {
+                foundStatusChange = true;
+                const newStatus = statusMatch[1].trim().toLowerCase();
+                if (terminalStatuses.some(s => newStatus.includes(s))) {
+                  activeUntil = entryDate;
+                } else {
+                  activeUntil = null;
+                }
               }
             }
           }
         }
 
-        // Fallback: use createdAt if no status history found
-        if (!activeFrom && todo.date) {
-          activeFrom = typeof todo.date === "string" ? todo.date.split("T")[0] : null;
+        // If no status change found in activities, use current status as fallback
+        if (!foundStatusChange) {
+          return applyStatusFallback({ ...todo, activeFrom }, terminalStatuses);
         }
 
         return { ...todo, activeFrom, activeUntil };
       } catch {
-        return todo;
+        return applyStatusFallback(todo, terminalStatuses);
       }
     }));
 

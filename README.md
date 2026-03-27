@@ -120,6 +120,31 @@ plans/                              # Planos de implementacao (001-007)
 
 ## Changelog
 
+### 2026-03-27 - Sessao 4: Fix activeFrom + Fix Horas a Mais
+
+**Fix recomendacoes a exceder horas esperadas:**
+- Motor de recomendacao (`lib/recommendations.ts`) podia gerar horas acima do target quando muitas tarefas tinham horas minimas (0.5h) — o ajuste final so corrigia a ultima tarefa, insuficiente para compensar
+- Agora usa loop iterativo que ajusta 0.5h de cada vez, distribuindo reducao pelas tarefas maiores ate o total bater certo
+- Se o minimo (N tarefas x 0.5h) excede o budget, desseleciona tarefas com menor score ate caber
+- Corrigido filtro de meetings task (falhava quando `meetingsTask` era null, incluindo-a na escala)
+- Modal do dia mostra "Registadas" com dados live (`timeEntries.byDay`) em vez de snapshot stale
+
+**Fix activeUntil — tarefas "Desenvolvido" apareciam apos data de conclusao:**
+- Parsing de atividades agora tem 3 metodos: structured details, text parsing (PT/EN), e fallback por status atual
+- Fallback: se status atual e terminal (desenvolvido, on hold, fechado, etc.) e nenhuma atividade de status foi encontrada, usa `updatedAt` como `activeUntil`
+- Adicionado "on hold" e "onhold" a lista de terminal statuses
+- Parse de texto: detecta "Situacao alterado de X para Y" e "Status changed from X to Y" em comments/notes
+
+**Fix activeFrom das Tarefas:**
+
+- **Corrigido `activeFrom` das tarefas:** Usava a primeira mudanca de status como `activeFrom`, mas muitas tarefas nao tem mudancas de status explicitas — ficavam com `activeFrom=null` e apareciam em TODOS os dias
+- Agora `activeFrom` e inicializado com `wp.createdAt` (data de criacao da tarefa no OpenProject) como baseline
+- Atividade de criacao (`_type: "Creation"`) e detectada e usada se for mais recente que `createdAt`
+- Removido fallback que usava `startDate` (podia ser anterior a criacao real, ex: inicio do sprint)
+- Deploy scripts (`deploy.sh`/`deploy.bat`) atualizados: fazem `down --rmi local` + `build --no-cache` para redeploy limpo
+- **Horas "Registadas" no modal do dia usam dados live** em vez de snapshot — reflete optimistic updates e evita valores stale
+- QuickHoursForm e botao "Limpar" tambem usam `timeEntries.byDay` live
+
 ### 2026-03-27 - Sessao 3: Loading States, Bugs de Auth, Optimistic Updates
 
 **Loading State por Dia:**

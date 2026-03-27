@@ -633,7 +633,7 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
                   </div>
                   <div className="flex-1 rounded-lg bg-slate-100 dark:bg-slate-700 p-3 text-center">
                     <p className="text-xs text-slate-600 dark:text-slate-400">Registadas</p>
-                    <p className="text-lg font-bold text-slate-900 dark:text-slate-100">{selectedDay.actualHours || 0}h</p>
+                    <p className="text-lg font-bold text-slate-900 dark:text-slate-100">{timeEntries.byDay[toKey(selectedDay.date)] || 0}h</p>
                   </div>
                 </div>
 
@@ -642,7 +642,7 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
                     className="flex-1 rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-600">
                     {showRecommendation ? "Ocultar" : "Recomendacoes"}
                   </button>
-                  {selectedDay.actualHours !== undefined && selectedDay.actualHours > 0 && (
+                  {(timeEntries.byDay[toKey(selectedDay.date)] || 0) > 0 && (
                     <button onClick={() => setClearHoursModal(selectedDay.date)} disabled={isSavingHours}
                       className="rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed">
                       Limpar
@@ -664,7 +664,7 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
                     pinnedTaskIds={getAssignmentsForDay(toKey(selectedDay.date)).map(a => a.taskId)}
                     taskHistory={timeEntries.byTask}
                     expectedHours={selectedDay.expectedHours || 0}
-                    actualHours={selectedDay.actualHours || 0}
+                    actualHours={timeEntries.byDay[toKey(selectedDay.date)] || 0}
                     meetingsTask={meetingsTask}
                     meetingsTaskId={meetingsTaskId}
                     isSaving={isSavingHours}
