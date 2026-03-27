@@ -25,4 +25,4 @@ services:
 
 networks:
   nginx_backend:
-    driver: bridge
+    external: true

@@ -1,71 +1,74 @@
 #!/bin/bash
 
 # Deploy script for website-log-horas
-# This script deploys the Next.js application using Docker Compose
+# Stops old container, rebuilds from scratch, and starts fresh
 
-set -e  # Exit on error
+set -e
 
 echo "================================"
-echo "🚀 Website Log Horas - Deploy"
+echo "Website Log Horas - Deploy"
 echo "================================"
 echo ""
 
-# Colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Check if Docker is installed
 if ! command -v docker &> /dev/null; then
-    echo -e "${RED}❌ Docker is not installed. Please install Docker first.${NC}"
+    echo -e "${RED}Docker is not installed. Please install Docker first.${NC}"
     exit 1
 fi
 
-# Check if Docker Compose is installed
-if ! command -v docker-compose &> /dev/null; then
-    echo -e "${RED}❌ Docker Compose is not installed. Please install Docker Compose first.${NC}"
+if ! command -v docker compose &> /dev/null && ! command -v docker-compose &> /dev/null; then
+    echo -e "${RED}Docker Compose is not installed.${NC}"
     exit 1
 fi
 
-echo -e "${YELLOW}📋 Checking Docker installation...${NC}"
+# Use 'docker compose' (v2) if available, fallback to 'docker-compose' (v1)
+if docker compose version &> /dev/null; then
+    DC="docker compose"
+else
+    DC="docker-compose"
+fi
+
+echo -e "${YELLOW}Docker:${NC}"
 docker --version
-docker-compose --version
+$DC version
 echo ""
 
-# Get the directory of the script
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-
-# Navigate to the application directory
 cd "$SCRIPT_DIR"
 
-echo -e "${YELLOW}📦 Building Docker image...${NC}"
-docker-compose build
-
+# Stop and remove old container + image
+echo -e "${YELLOW}Stopping and removing old container...${NC}"
+$DC down --rmi local --remove-orphans 2>/dev/null || true
 echo ""
-echo -e "${YELLOW}🔥 Starting services...${NC}"
-docker-compose up -d
 
+# Build fresh
+echo -e "${YELLOW}Building Docker image (no cache)...${NC}"
+$DC build --no-cache
 echo ""
-echo -e "${YELLOW}⏳ Waiting for application to be ready...${NC}"
+
+# Start
+echo -e "${YELLOW}Starting services...${NC}"
+$DC up -d
+echo ""
+
+echo -e "${YELLOW}Waiting for application to be ready...${NC}"
 sleep 5
 
-# Check if the container is running
-if docker-compose ps | grep -q "website-log-horas"; then
-    echo -e "${GREEN}✅ Application is running!${NC}"
+if $DC ps | grep -q "website-log-horas"; then
+    echo -e "${GREEN}Deployment successful!${NC}"
     echo ""
-    echo -e "${GREEN}🎉 Deployment successful!${NC}"
+    echo "  URL:       http://localhost:3700"
+    echo "  Container: website-log-horas"
     echo ""
-    echo "Application details:"
-    echo "  - URL: http://localhost:3700"
-    echo "  - Container: website-log-horas"
-    echo ""
-    echo "Useful commands:"
-    echo "  - View logs:        docker-compose logs -f"
-    echo "  - Stop services:    docker-compose down"
-    echo "  - Restart services: docker-compose restart"
-    echo "  - View status:      docker-compose ps"
+    echo "Commands:"
+    echo "  Logs:    $DC logs -f"
+    echo "  Stop:    $DC down"
+    echo "  Status:  $DC ps"
 else
-    echo -e "${RED}❌ Application failed to start. Check logs with: docker-compose logs${NC}"
+    echo -e "${RED}Application failed to start. Check logs: $DC logs${NC}"
     exit 1
 fi
