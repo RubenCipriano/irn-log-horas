@@ -1,15 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import type { TodoItem, Holiday, SelectedDay, Recommendation, TimeEntriesData, SprintInfo } from "@/types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { TodoItem, Holiday, SelectedDay, Recommendation, TimeEntriesData, SprintInfo, TaskStatusTimeline, AIDistributionItem } from "@/types";
 import { useWorkSchedule } from "@/hooks/useWorkSchedule";
 import { useTaskAssignments } from "@/hooks/useTaskAssignments";
+import { useStatusWeights } from "@/hooks/useStatusWeights";
+import { useAIProvider } from "@/hooks/useAIProvider";
+import { useGitLabConfig } from "@/hooks/useGitLabConfig";
+import { useTimelineInference } from "@/hooks/useTimelineInference";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { useTheme } from "@/hooks/useTheme";
 import {
   formatHours, toKey, getHoursStatus, getDaysInMonth, getMonthStartOffset,
   WEEKDAYS_PT, MONTHS_PT, IN_PROGRESS_STATUSES,
 } from "@/lib/calendar-utils";
 import { getPortugalHolidays } from "@/lib/holidays";
-import ScheduleSettings from "@/components/ScheduleSettings";
+import { getStatusWeightForDay } from "@/lib/status-timeline";
 import { useToast } from "@/components/Toast";
 import { getActiveTasksForDay } from "@/lib/task-filtering";
 import TaskAssignmentModal from "@/components/TaskAssignmentModal";
@@ -21,6 +27,16 @@ import ClearMonthModal from "./ClearMonthModal";
 import QuickHoursForm from "@/components/QuickHoursForm";
 import WeekFillModal from "@/components/WeekFillModal";
 import MonthFillModal from "@/components/MonthFillModal";
+import AppShell from "@/components/Layout/AppShell";
+import Sidebar from "@/components/Layout/Sidebar";
+import TopBar from "@/components/Layout/TopBar";
+import SettingsDrawer from "@/components/Layout/SettingsDrawer";
+import CommandPalette from "@/components/CommandPalette";
+import AISettings from "@/components/AISettings";
+import AIPreviewModal from "@/components/AIPreviewModal";
+import GitLabSettings from "@/components/GitLabSettings";
+import TimelineInferenceSettings from "@/components/TimelineInferenceSettings";
+import ModalCloseButton from "@/components/ModalCloseButton";
 
 const EMPTY_TIME_ENTRIES: TimeEntriesData = { byDay: {}, byTask: {}, byDayTask: {} };
 
@@ -33,13 +49,52 @@ type CalendarProps = {
   onTimeEntriesUpdate?: (updater: (prev: TimeEntriesData) => TimeEntriesData) => void;
   authToken?: string | null;
   authUrl?: string;
+  userName?: string;
+  userEmail?: string;
+  onLogout?: () => void;
 };
 
-export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRIES, sprints = [], isLoading = false, onMonthChange, onTimeEntriesUpdate, authToken, authUrl }: CalendarProps) {
+export default function Calendar({
+  todoList = [], timeEntries = EMPTY_TIME_ENTRIES, sprints = [], isLoading = false,
+  onMonthChange, onTimeEntriesUpdate, authToken, authUrl,
+  userName, userEmail, onLogout,
+}: CalendarProps) {
   const today = new Date();
   const { addToast } = useToast();
   const { schedule, saveSchedule, resetSchedule, getExpectedHours } = useWorkSchedule();
   const { assignments, assignTask, unassignTask, getAssignmentsForDay } = useTaskAssignments();
+  const { weights: statusWeights, overrides: weightOverrides, setWeight, resetWeight, reset: resetAllWeights } = useStatusWeights();
+  const { config: aiConfig, setConfig: setAiConfig, clear: clearAiConfig } = useAIProvider();
+  const { config: gitlabConfig, setConfig: setGitlabConfig, clear: clearGitlabConfig } = useGitLabConfig();
+  const { config: inferenceConfig, setConfig: setInferenceConfig, reset: resetInference } = useTimelineInference();
+  const { theme, setTheme, cycle: cycleTheme } = useTheme();
+
+  const [sidebarCollapsed, setSidebarCollapsedState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("sidebar_collapsed_v1") === "1";
+  });
+  const setSidebarCollapsed = (v: boolean) => {
+    setSidebarCollapsedState(v);
+    try { localStorage.setItem("sidebar_collapsed_v1", v ? "1" : "0"); } catch { /* ignore */ }
+  };
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteProcessing, setPaletteProcessing] = useState(false);
+  const [palettePrefill, setPalettePrefill] = useState<string>("");
+  const [paletteRange, setPaletteRange] = useState<"day" | "week" | "month">("week");
+  const [paletteAnchorDate, setPaletteAnchorDate] = useState<Date | null>(null);
+  const paletteAbortRef = useRef<AbortController | null>(null);
+  const [paletteStage, setPaletteStage] = useState<"idle" | "gitlab" | "ai" | "parse">("idle");
+  const [paletteDetail, setPaletteDetail] = useState<string>("");
+  const [paletteStartedAt, setPaletteStartedAt] = useState<number | null>(null);
+  const [aiPreview, setAiPreview] = useState<AIDistributionItem[] | null>(null);
+  const [aiReasoning, setAiReasoning] = useState<string | undefined>(undefined);
+  const [aiWarnings, setAiWarnings] = useState<string[] | undefined>(undefined);
+  const [aiRawResponse, setAiRawResponse] = useState<string | undefined>(undefined);
+  const [aiGitlabSummary, setAiGitlabSummary] = useState<{ commits: number; mrs: number; matchedById: number; matchedByFuzzy: number; unmatched: number } | undefined>(undefined);
+  const [aiUnmatched, setAiUnmatched] = useState<Array<{ type: "commit" | "merge_request"; title: string; project: string; createdAt: string; refIds: string[]; url: string }> | undefined>(undefined);
+  const [aiDebug, setAiDebug] = useState<{ promptSystem: string; promptUser: string; dateRange: { from: string; to: string }; tasksSent: number; gitlabActivitySent: number } | undefined>(undefined);
+
   const [showTaskAssignment, setShowTaskAssignment] = useState(false);
   const [showWeekFill, setShowWeekFill] = useState(false);
   const [showMonthFill, setShowMonthFill] = useState(false);
@@ -48,11 +103,18 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
   const [selectedTodo, setSelectedTodo] = useState<TodoItem | null>(null);
   const [selectedDay, setSelectedDay] = useState<SelectedDay | null>(null);
   const [showRecommendation, setShowRecommendation] = useState(false);
-  const [meetingsTaskId, setMeetingsTaskId] = useState(() => {
-    return localStorage.getItem("meetings_task_id") || "5158";
+  const [meetingsTaskId, setMeetingsTaskId] = useState(() => localStorage.getItem("meetings_task_id") || "5158");
+  const [meetingsHours, setMeetingsHoursState] = useState<number>(() => {
+    const raw = typeof window !== "undefined" ? localStorage.getItem("meetings_hours_v1") : null;
+    const parsed = raw ? parseFloat(raw) : NaN;
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0.5;
   });
+  const setMeetingsHours = (h: number) => {
+    const clamped = Math.max(0, Math.min(8, Math.round(h * 2) / 2));
+    setMeetingsHoursState(clamped);
+    try { localStorage.setItem("meetings_hours_v1", String(clamped)); } catch { /* ignore */ }
+  };
   const [meetingsTask, setMeetingsTask] = useState<TodoItem | null>(null);
-  const [showMeetingsInput, setShowMeetingsInput] = useState(false);
   const [isSavingHours, setIsSavingHours] = useState(false);
   const [savingDays, setSavingDays] = useState<Set<string>>(new Set());
   const [confirmationModal, setConfirmationModal] = useState<{
@@ -62,21 +124,18 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
   const [clearHoursModal, setClearHoursModal] = useState<Date | null>(null);
   const [showClearMonth, setShowClearMonth] = useState(false);
   const [clearProgress, setClearProgress] = useState<{ current: number; total: number } | null>(null);
-  const [activeSprint, setActiveSprint] = useState<string | null>(() => {
-    return localStorage.getItem("active_sprint") || null;
-  });
+  const [activeSprint, setActiveSprint] = useState<string | null>(() => localStorage.getItem("active_sprint") || null);
 
   // Available sprints from tasks
   const availableSprints = useMemo(() => {
-    const sprints = new Set<string>();
-    todoList.forEach(t => { if (t.sprint) sprints.add(t.sprint); });
-    return Array.from(sprints).sort();
+    const set = new Set<string>();
+    todoList.forEach(t => { if (t.sprint) set.add(t.sprint); });
+    return Array.from(set).sort();
   }, [todoList]);
 
   // Auto-detect sprint on first load
   useEffect(() => {
     if (activeSprint || availableSprints.length === 0) return;
-    // Pick sprint with most tasks
     const counts: Record<string, number> = {};
     todoList.forEach(t => { if (t.sprint) counts[t.sprint] = (counts[t.sprint] || 0) + 1; });
     const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
@@ -88,19 +147,17 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
 
   // Lock body scroll when any modal is open
   useEffect(() => {
-    const anyModalOpen = !!(selectedDay || selectedTodo || confirmationModal || clearHoursModal || showClearMonth || showWeekFill || showMonthFill || showTaskAssignment);
+    const anyModalOpen = !!(selectedDay || selectedTodo || confirmationModal || clearHoursModal || showClearMonth || showWeekFill || showMonthFill || showTaskAssignment || settingsOpen || paletteOpen || aiPreview);
     document.body.style.overflow = anyModalOpen ? "hidden" : "";
     return () => { document.body.style.overflow = ""; };
-  }, [selectedDay, selectedTodo, confirmationModal, clearHoursModal, showClearMonth, showWeekFill, showMonthFill, showTaskAssignment]);
+  }, [selectedDay, selectedTodo, confirmationModal, clearHoursModal, showClearMonth, showWeekFill, showMonthFill, showTaskAssignment, settingsOpen, paletteOpen, aiPreview]);
 
-  // Auto-show recommendation if selected day has no hours
   useEffect(() => {
     if (selectedDay && selectedDay.expectedHours !== null && !selectedDay.actualHours) {
       setShowRecommendation(true);
     }
   }, [selectedDay]);
 
-  // Load meetings task from OpenProject
   useEffect(() => {
     if (meetingsTaskId && authToken && authUrl) {
       const fetchMeetingsTask = async () => {
@@ -126,7 +183,7 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
 
   const saveMeetingsTask = () => {
     localStorage.setItem("meetings_task_id", meetingsTaskId);
-    setShowMeetingsInput(false);
+    addToast("Task de meetings atualizada.", "success");
   };
 
   // --- Optimistic Updates ---
@@ -381,13 +438,9 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
 
   const monthDevelopmentTasks = useMemo(() => {
     return todoList.filter(todo => {
-      // Must have valid in-progress status
       if (!todo.status || !IN_PROGRESS_STATUSES.some(s => todo.status!.toLowerCase().includes(s.toLowerCase()))) return false;
-      // Exclude closed
       if (todo.isClosed) return false;
-      // Filter by sprint if active
       if (activeSprint && todo.sprint) return todo.sprint === activeSprint;
-      // If no sprint filter or task has no sprint, filter by month
       if (todo.updatedAt) {
         const updated = new Date(todo.updatedAt);
         return updated.getMonth() === currentMonth && updated.getFullYear() === currentYear;
@@ -395,6 +448,22 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
       return true;
     });
   }, [todoList, activeSprint, currentMonth, currentYear]);
+
+  const timelines = useMemo<Record<string, TaskStatusTimeline>>(() => {
+    const map: Record<string, TaskStatusTimeline> = {};
+    for (const t of todoList) {
+      if (t.timeline) map[t.id] = t.timeline;
+    }
+    return map;
+  }, [todoList]);
+
+  const allPinnedIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const dayAssignments of Object.values(assignments)) {
+      for (const a of dayAssignments) set.add(a.taskId);
+    }
+    return Array.from(set);
+  }, [assignments]);
 
   const activeSprintInfo = useMemo(() => {
     if (!activeSprint) return null;
@@ -416,106 +485,218 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
   const startOffset = getMonthStartOffset(currentYear, currentMonth);
   const totalCells = Math.ceil((startOffset + daysInMonth) / 7) * 7;
 
-  // --- Render ---
-  return (
-    <div className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={goToPreviousMonth} disabled={isLoading}
-            className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-slate-700 transition hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed">
-            BACK
-          </button>
-          <button type="button" onClick={goToNextMonth} disabled={isLoading}
-            className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-slate-700 transition hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed">
-            NEXT
-          </button>
-          <button type="button" onClick={goToToday} disabled={isLoading}
-            className="rounded-lg border border-slate-200 px-3 py-1 text-sm font-medium text-slate-700 transition hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed">
-            Hoje
-          </button>
-          <button type="button" onClick={() => setShowWeekFill(true)} disabled={isLoading}
-            className="rounded-lg bg-indigo-500 px-3 py-1 text-sm font-medium text-white transition hover:bg-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed">
-            Semana
-          </button>
-          <button type="button" onClick={() => setShowMonthFill(true)} disabled={isLoading}
-            className="rounded-lg bg-purple-500 px-3 py-1 text-sm font-medium text-white transition hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed">
-            Mes
-          </button>
-          <button type="button" onClick={() => setShowClearMonth(true)} disabled={isLoading}
-            className="rounded-lg bg-red-500 px-3 py-1 text-sm font-medium text-white transition hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed">
-            Limpar Horas
-          </button>
-        </div>
-        <div className="text-lg font-semibold text-slate-900 dark:text-slate-200">
-          {isLoading ? <div className="h-6 w-48 animate-pulse rounded bg-slate-200 dark:bg-slate-700" /> : `${MONTHS_PT[currentMonth]} ${currentYear}`}
-        </div>
-      </div>
+  // --- AI command palette flow ---
+  async function handlePaletteSubmit(description: string, range: "day" | "week" | "month") {
+    if (!aiConfig) {
+      setPaletteOpen(false);
+      setSettingsOpen(true);
+      return;
+    }
+    // Cancel any previous in-flight palette call
+    paletteAbortRef.current?.abort();
+    const controller = new AbortController();
+    paletteAbortRef.current = controller;
 
-      {/* Sprint filter */}
-      {availableSprints.length > 0 && (
-        <div className="mb-4 flex items-center gap-2">
-          <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Sprint:</label>
-          <select
-            value={activeSprint || ""}
-            onChange={(e) => {
-              const val = e.target.value || null;
-              setActiveSprint(val);
-              if (val) localStorage.setItem("active_sprint", val);
-              else localStorage.removeItem("active_sprint");
-            }}
-            className="rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-1 text-sm text-slate-900 dark:text-slate-100 focus:border-indigo-500 focus:outline-none"
-          >
-            <option value="">Todas</option>
-            {availableSprints.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-          {activeSprintInfo?.startDate && activeSprintInfo?.endDate && (
-            <span className="text-xs text-slate-500 dark:text-slate-400">
-              ({new Date(activeSprintInfo.startDate + "T00:00:00").toLocaleDateString("pt-PT", { day: "numeric", month: "short" })} - {new Date(activeSprintInfo.endDate + "T00:00:00").toLocaleDateString("pt-PT", { day: "numeric", month: "short" })})
-            </span>
-          )}
-          <span className="text-xs text-slate-500 dark:text-slate-400">
-            ({monthDevelopmentTasks.length} tarefas)
+    setPaletteProcessing(true);
+    setPaletteStartedAt(Date.now());
+    setPaletteStage("idle");
+    setPaletteDetail("A preparar pedido...");
+    try {
+      // Use anchor date when set (palette opened from a specific day), else fall back to today.
+      const anchor = paletteAnchorDate || today;
+      const anchorKey = toKey(anchor);
+      let from = anchorKey;
+      let to = anchorKey;
+      if (range === "week") {
+        const monday = new Date(anchor);
+        const offset = (anchor.getDay() + 6) % 7;
+        monday.setDate(anchor.getDate() - offset);
+        const friday = new Date(monday);
+        friday.setDate(monday.getDate() + 4);
+        from = toKey(monday);
+        to = toKey(friday);
+      } else if (range === "month") {
+        from = toKey(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+        const lastDay = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0).getDate();
+        to = toKey(new Date(anchor.getFullYear(), anchor.getMonth(), lastDay));
+      }
+
+      const tasksForAI = monthDevelopmentTasks.map(t => ({
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        timeline: t.timeline,
+      }));
+
+      // Optionally fetch recent GitLab activity for the same range
+      let gitlabActivity: unknown[] | undefined;
+      if (gitlabConfig) {
+        setPaletteStage("gitlab");
+        setPaletteDetail(`A obter commits/MRs de ${from === to ? from : `${from} a ${to}`}...`);
+        try {
+          const gitlabResponse = await fetch("/api/gitlab/activity", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              config: gitlabConfig,
+              since: new Date(from + "T00:00:00").toISOString(),
+              until: new Date(to + "T23:59:59").toISOString(),
+            }),
+            signal: controller.signal,
+          });
+          if (gitlabResponse.ok) {
+            const data = await gitlabResponse.json();
+            gitlabActivity = data.activities || [];
+            setPaletteDetail(`GitLab: ${Array.isArray(gitlabActivity) ? gitlabActivity.length : 0} item(s) recebidos.`);
+          } else {
+            const data = await gitlabResponse.json().catch(() => ({}));
+            // Map common HTTP statuses to actionable messages
+            const status = gitlabResponse.status;
+            let msg: string;
+            if (status === 401) msg = "Token GitLab invalido ou expirado. Atualiza nas definicoes.";
+            else if (status === 403) msg = "Token GitLab sem permissoes suficientes (precisa read_api + read_user).";
+            else if (status >= 500) msg = "GitLab indisponivel. Tenta de novo em alguns minutos.";
+            else msg = `GitLab ${status}: ${data.error || "erro desconhecido"}`;
+            addToast(msg, "warning");
+          }
+        } catch (err) {
+          addToast(`GitLab indisponivel: ${err instanceof Error ? err.message : "rede"}`, "warning");
+        }
+      }
+
+      setPaletteStage("ai");
+      setPaletteDetail(`A consultar ${aiConfig.kind} com ${tasksForAI.length} tarefa(s)${gitlabActivity ? ` + ${gitlabActivity.length} item(s) GitLab` : ""}...`);
+      const response = await fetch("/api/ai/distribute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          description,
+          dateRange: { from, to },
+          tasks: tasksForAI,
+          weights: statusWeights,
+          schedule,
+          providerConfig: aiConfig,
+          gitlabActivity,
+          meetings: meetingsHours > 0 && meetingsTaskId ? {
+            taskId: meetingsTaskId,
+            taskTitle: meetingsTask?.title || "Meetings",
+            hours: meetingsHours,
+          } : undefined,
+        }),
+        signal: controller.signal,
+      });
+      setPaletteStage("parse");
+      setPaletteDetail("A validar e processar a resposta...");
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Falha na geracao");
+      }
+      const items: AIDistributionItem[] = Array.isArray(data.items) ? data.items : [];
+      setAiReasoning(typeof data.reasoning === "string" ? data.reasoning : undefined);
+      setAiWarnings(Array.isArray(data.warnings) ? data.warnings : undefined);
+      setAiRawResponse(typeof data.rawResponse === "string" ? data.rawResponse : undefined);
+      setAiGitlabSummary(data.gitlabSummary && typeof data.gitlabSummary === "object" ? data.gitlabSummary : undefined);
+      setAiUnmatched(Array.isArray(data.unmatchedActivities) ? data.unmatchedActivities : undefined);
+      setAiDebug(data.debug && typeof data.debug === "object" ? data.debug : undefined);
+      setPaletteOpen(false);
+      setAiPreview(items);
+    } catch (err) {
+      // Aborts are deliberate user cancellations, not errors.
+      if (err instanceof DOMException && err.name === "AbortError") {
+        addToast("Pedido cancelado.", "warning");
+      } else if ((err as { name?: string })?.name === "AbortError") {
+        addToast("Pedido cancelado.", "warning");
+      } else {
+        const raw = err instanceof Error ? err.message : "Erro desconhecido";
+        let msg = `Erro IA: ${raw}`;
+        if (/401/.test(raw)) msg = "API key da IA invalida. Atualiza nas definicoes.";
+        else if (/403/.test(raw)) msg = "API key da IA sem permissoes ou modelo nao disponivel.";
+        else if (/429/.test(raw)) msg = "Limite de pedidos atingido. Tenta noutro modelo (Groq tem maior quota gratuita).";
+        else if (/5\d\d/.test(raw)) msg = "Fornecedor de IA indisponivel. Tenta de novo em alguns minutos.";
+        addToast(msg, "error");
+      }
+    } finally {
+      setPaletteProcessing(false);
+      setPaletteStage("idle");
+      setPaletteDetail("");
+      setPaletteStartedAt(null);
+      paletteAbortRef.current = null;
+    }
+  }
+
+  function handlePaletteCancel() {
+    paletteAbortRef.current?.abort();
+  }
+
+  async function saveAIDistribution(items: AIDistributionItem[]) {
+    // Group by day
+    const grouped = new Map<string, Recommendation[]>();
+    for (const it of items) {
+      if (!grouped.has(it.dayKey)) grouped.set(it.dayKey, []);
+      grouped.get(it.dayKey)!.push({ taskId: it.taskId, taskTitle: it.taskTitle, hours: it.hours });
+    }
+    const dayEntries = Array.from(grouped.entries()).map(([dayKey, recs]) => ({
+      date: new Date(dayKey + "T00:00:00"),
+      recommendations: recs,
+    }));
+    setAiPreview(null);
+    await saveMultipleDays(dayEntries);
+  }
+
+  // --- Keyboard shortcuts ---
+  useKeyboardShortcuts({
+    onPalette: () => { setPaletteAnchorDate(null); setPaletteRange("week"); setPaletteOpen(true); },
+    onPrevMonth: goToPreviousMonth,
+    onNextMonth: goToNextMonth,
+    onToday: goToToday,
+    onWeekFill: () => setShowWeekFill(true),
+    onMonthFill: () => setShowMonthFill(true),
+    onSettings: () => setSettingsOpen(true),
+    onEscape: () => {
+      // close in priority order
+      if (paletteOpen) { setPaletteOpen(false); return; }
+      if (aiPreview) { setAiPreview(null); return; }
+      if (selectedTodo) { setSelectedTodo(null); return; }
+      if (confirmationModal) { setConfirmationModal(null); return; }
+      if (clearHoursModal) { setClearHoursModal(null); return; }
+      if (showClearMonth) { setShowClearMonth(false); return; }
+      if (showWeekFill) { setShowWeekFill(false); return; }
+      if (showMonthFill) { setShowMonthFill(false); return; }
+      if (showTaskAssignment) { setShowTaskAssignment(false); return; }
+      if (selectedDay) { setSelectedDay(null); return; }
+      if (settingsOpen) { setSettingsOpen(false); return; }
+    },
+  });
+
+  const calendarContent = (
+    <div className="p-4 md:p-6">
+      {/* Sprint info chip */}
+      {activeSprintInfo?.startDate && activeSprintInfo?.endDate && (
+        <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-indigo-50 dark:bg-indigo-950 px-3 py-1 text-xs text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+          <span className="font-medium">{activeSprint}</span>
+          <span className="text-indigo-400 dark:text-indigo-500">·</span>
+          <span>
+            {new Date(activeSprintInfo.startDate + "T00:00:00").toLocaleDateString("pt-PT", { day: "numeric", month: "short" })}
+            {" — "}
+            {new Date(activeSprintInfo.endDate + "T00:00:00").toLocaleDateString("pt-PT", { day: "numeric", month: "short" })}
           </span>
+          <span className="text-indigo-400 dark:text-indigo-500">·</span>
+          <span>{monthDevelopmentTasks.length} tarefas</span>
         </div>
       )}
 
-      {/* Settings */}
-      <div className="mb-4 space-y-2">
-        <button onClick={() => setShowMeetingsInput(!showMeetingsInput)}
-          className="w-full rounded-lg bg-slate-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-600">
-          Configurar Task de Meetings {meetingsTaskId && `(ID: ${meetingsTaskId})`}
-        </button>
-        {showMeetingsInput && (
-          <div className="rounded-lg bg-slate-50 dark:bg-slate-800 p-4 border border-slate-200 dark:border-slate-700">
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
-              ID da Task de Meetings (0.5h todos os dias)
-            </label>
-            <div className="flex gap-2">
-              <input type="text" value={meetingsTaskId} onChange={(e) => setMeetingsTaskId(e.target.value)} placeholder="Ex: 12345"
-                className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100" />
-              <button onClick={saveMeetingsTask} className="rounded-lg bg-green-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-green-600">Guardar</button>
-            </div>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-2">
-              Esta task sera automaticamente adicionada com 0.5h em todos os dias uteis na distribuicao.
-            </p>
-          </div>
-        )}
-        <ScheduleSettings schedule={schedule} onSave={saveSchedule} onReset={resetSchedule} />
-      </div>
-
       {/* Weekday headers */}
-      <div className="mt-6 grid grid-cols-7 gap-2 text-center text-xs font-semibold uppercase text-slate-500">
+      <div className="grid grid-cols-7 gap-2 text-center text-[10px] font-semibold uppercase text-slate-500 dark:text-slate-400 mb-2">
         {WEEKDAYS_PT.map((day) => <div key={day}>{day}</div>)}
       </div>
 
       {/* Calendar grid */}
-      <div className="mt-3 grid grid-cols-7 gap-2">
+      <div className="grid grid-cols-7 gap-2">
         {isLoading ? (
           Array.from({ length: 35 }).map((_, i) => (
-            <div key={`skeleton-${i}`} className="flex min-h-20 flex-col rounded-xl border border-slate-200 bg-slate-100 p-2 dark:border-slate-600 dark:bg-slate-700 animate-pulse">
-              <div className="h-4 w-6 rounded bg-slate-300 dark:bg-slate-600" />
-              <div className="mt-2 h-3 w-12 rounded bg-slate-300 dark:bg-slate-600" />
+            <div key={`skeleton-${i}`} className="flex min-h-22 flex-col rounded-xl border border-slate-200 bg-slate-100 p-2 dark:border-slate-700 dark:bg-slate-800 animate-pulse-soft">
+              <div className="h-3 w-5 rounded bg-slate-300 dark:bg-slate-700" />
+              <div className="mt-2 h-2 w-10 rounded bg-slate-300 dark:bg-slate-700" />
             </div>
           ))
         ) : (
@@ -527,6 +708,8 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
             const holiday = isCurrentMonth ? holidayMap.get(key) : undefined;
             const dayTodos = isCurrentMonth ? todoMap.get(key) || [] : [];
             const isToday = isCurrentMonth && dayNumber === today.getDate() && currentMonth === today.getMonth() && currentYear === today.getFullYear();
+            const dow = date.getDay();
+            const isWeekend = dow === 0 || dow === 6;
             const expectedHours = isCurrentMonth && !holiday ? getExpectedHours(date) : null;
             const actualHours = isCurrentMonth ? timeEntries.byDay[key] : undefined;
             const hoursStatus = isCurrentMonth && !holiday ? getHoursStatus(actualHours, expectedHours) : null;
@@ -537,12 +720,16 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
                 dayNumber={dayNumber}
                 isCurrentMonth={isCurrentMonth}
                 isToday={isToday}
+                isWeekend={isWeekend}
                 holiday={holiday}
                 todos={dayTodos}
                 hoursStatus={hoursStatus}
                 hasHours={!!actualHours && actualHours > 0}
                 isInSprint={isCurrentMonth && sprintDayKeys.has(key)}
                 isSaving={savingDays.has(key)}
+                dayKey={key}
+                timelines={timelines}
+                statusWeights={statusWeights}
                 onClick={() => {
                   if (isCurrentMonth) setSelectedDay({ date, todos: dayTodos, holiday, actualHours, expectedHours });
                 }}
@@ -555,127 +742,288 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
       </div>
 
       {/* Holidays list */}
-      <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300">
-        <p className="font-semibold">Feriados nacionais (Portugal)</p>
-        <ul className="mt-2 grid gap-1 sm:grid-cols-2">
+      <div className="mt-6 rounded-xl border border-slate-200 bg-[var(--surface-1)] p-4 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+        <p className="text-[10px] font-semibold uppercase text-slate-500 dark:text-slate-400 mb-2">Feriados nacionais (Portugal)</p>
+        <ul className="grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
           {holidays.sort((a, b) => a.date.getTime() - b.date.getTime()).map((holiday) => (
-            <li key={holiday.name} className="flex items-center gap-2">
-              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+            <li key={holiday.name} className="flex items-center gap-2 text-xs">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
               <span>{holiday.name} — {holiday.date.getDate()} {MONTHS_PT[holiday.date.getMonth()]}</span>
             </li>
           ))}
         </ul>
       </div>
+    </div>
+  );
+
+  return (
+    <AppShell
+      sidebar={
+        <Sidebar
+          userName={userName}
+          userEmail={userEmail}
+          url={authUrl || ""}
+          onLogout={onLogout || (() => {})}
+          todos={todoList}
+          sprints={sprints}
+          activeSprint={activeSprint}
+          setActiveSprint={(s) => {
+            setActiveSprint(s);
+            if (s) localStorage.setItem("active_sprint", s);
+            else localStorage.removeItem("active_sprint");
+          }}
+          pinnedTaskIds={allPinnedIds}
+          onTaskClick={setSelectedTodo}
+          collapsed={sidebarCollapsed}
+          setCollapsed={setSidebarCollapsed}
+        />
+      }
+      topBar={
+        <TopBar
+          year={currentYear}
+          month={currentMonth}
+          onPrev={goToPreviousMonth}
+          onNext={goToNextMonth}
+          onToday={goToToday}
+          onPalette={() => { setPaletteAnchorDate(null); setPaletteRange("week"); setPaletteOpen(true); }}
+          onSettings={() => setSettingsOpen(true)}
+          onWeekFill={() => setShowWeekFill(true)}
+          onMonthFill={() => setShowMonthFill(true)}
+          onClearMonth={() => setShowClearMonth(true)}
+          onReload={() => onMonthChange?.()}
+          isReloading={isLoading}
+          isLoading={isLoading}
+          theme={theme}
+          onCycleTheme={cycleTheme}
+        />
+      }
+      drawer={
+        <SettingsDrawer
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          schedule={schedule}
+          onScheduleSave={saveSchedule}
+          onScheduleReset={resetSchedule}
+          timelines={timelines}
+          statusWeights={statusWeights}
+          overrides={weightOverrides}
+          setWeight={setWeight}
+          resetWeight={resetWeight}
+          resetAllWeights={resetAllWeights}
+          meetingsTaskId={meetingsTaskId}
+          setMeetingsTaskId={setMeetingsTaskId}
+          saveMeetingsTaskId={saveMeetingsTask}
+          meetingsHours={meetingsHours}
+          setMeetingsHours={setMeetingsHours}
+          aiConfig={aiConfig}
+          aiSettingsSlot={<AISettings config={aiConfig} onSave={setAiConfig} onClear={clearAiConfig} />}
+          gitlabConfig={gitlabConfig}
+          gitlabSettingsSlot={<GitLabSettings config={gitlabConfig} onSave={setGitlabConfig} onClear={clearGitlabConfig} />}
+          inferenceSettingsSlot={<TimelineInferenceSettings config={inferenceConfig} setConfig={setInferenceConfig} reset={resetInference} />}
+          theme={theme}
+          setTheme={setTheme}
+        />
+      }
+    >
+      {calendarContent}
 
       {/* Task detail modal */}
-      {selectedTodo && <TaskModal todo={selectedTodo} onClose={() => setSelectedTodo(null)} />}
+      {selectedTodo && (
+        <TaskModal
+          todo={selectedTodo}
+          statusWeights={statusWeights}
+          onClose={() => setSelectedTodo(null)}
+          onInferredClick={(taskTitle, seg) => {
+            const fmt = (d: string) => new Date(d + "T00:00:00").toLocaleDateString("pt-PT", { day: "numeric", month: "short" });
+            const to = seg.toDate ?? new Date().toISOString().slice(0, 10);
+            const prompt = `Confirma o que fizeste em "${taskTitle}" entre ${fmt(seg.fromDate)} e ${fmt(to)}.`;
+            setSelectedTodo(null);
+            setPalettePrefill(prompt);
+            setPaletteRange("week");
+            setPaletteOpen(true);
+          }}
+        />
+      )}
 
       {/* Day detail modal */}
-      {selectedDay && (
-        <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50 p-4" onClick={() => setSelectedDay(null)}>
-          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-lg p-6 w-full max-w-md border border-slate-200 dark:border-slate-600 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-start justify-between mb-4">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-200">
-                  {selectedDay.date.toLocaleDateString("pt-PT", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
-                </h2>
+      {selectedDay && (() => {
+        const dayKey = toKey(selectedDay.date);
+        const weekday = selectedDay.date.toLocaleDateString("pt-PT", { weekday: "long" });
+        const datePart = selectedDay.date.toLocaleDateString("pt-PT", { day: "numeric", month: "long", year: "numeric" });
+        const expected = selectedDay.expectedHours ?? null;
+        const actual = timeEntries.byDay[dayKey] || 0;
+        const remaining = expected !== null ? Math.max(0, expected - actual) : 0;
+        const progressPct = expected && expected > 0 ? Math.min(100, (actual / expected) * 100) : 0;
+        const isOver = expected !== null && actual > expected;
+        const isComplete = expected !== null && actual >= expected && expected > 0;
+        const byDayTaskEntries = timeEntries.byDayTask[dayKey] ? Object.entries(timeEntries.byDayTask[dayKey]) : [];
+        return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 animate-fade-in" onClick={() => setSelectedDay(null)}>
+          <div className="w-full max-w-lg rounded-2xl bg-white dark:bg-slate-900 shadow-2xl border border-slate-200 dark:border-slate-700 max-h-[90vh] flex flex-col animate-slide-up" onClick={e => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3 p-5 border-b border-slate-200 dark:border-slate-700">
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase font-semibold tracking-wide text-slate-500 dark:text-slate-400">{weekday}</p>
+                <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">{datePart}</h2>
                 {selectedDay.holiday && (
-                  <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">{selectedDay.holiday.name}</p>
+                  <span className="inline-flex items-center gap-1 mt-1 rounded-full bg-emerald-100 dark:bg-emerald-950/40 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> {selectedDay.holiday.name}
+                  </span>
                 )}
               </div>
-              <button onClick={() => setSelectedDay(null)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xl font-bold">x</button>
+              <ModalCloseButton onClick={() => setSelectedDay(null)} />
             </div>
 
-            {selectedDay.todos.length > 0 ? (
-              <div className="space-y-2">
-                <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Tarefas ({selectedDay.todos.length}):</p>
-                {selectedDay.todos.map((todo) => (
-                  <div key={todo.id} className="rounded-lg bg-blue-50 dark:bg-blue-900 p-3 border border-blue-200 dark:border-blue-700">
-                    <p className="text-sm font-medium text-blue-900 dark:text-blue-100">{todo.title}</p>
-                    {todo.status && <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">Status: {todo.status}</p>}
+            <div className="flex-1 overflow-y-auto p-5 space-y-5">
+              {/* Progress bar */}
+              {expected !== null && expected > 0 && (
+                <div>
+                  <div className="flex items-baseline justify-between mb-1.5">
+                    <span className="text-[10px] uppercase font-semibold tracking-wide text-slate-500 dark:text-slate-400">Progresso do dia</span>
+                    <span className={`text-sm font-mono font-semibold ${isOver ? "text-amber-600 dark:text-amber-400" : isComplete ? "text-emerald-600 dark:text-emerald-400" : "text-slate-700 dark:text-slate-200"}`}>
+                      {formatHours(actual)}h / {expected}h
+                    </span>
                   </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-slate-500 dark:text-slate-400">Nenhuma tarefa para este dia</p>
-            )}
-
-            {/* Tarefas trabalhadas (horas registadas por tarefa) */}
-            {timeEntries.byDayTask[toKey(selectedDay.date)] && Object.keys(timeEntries.byDayTask[toKey(selectedDay.date)]).length > 0 && (
-              <div className="mt-3">
-                <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Tarefas trabalhadas:</p>
-                <div className="space-y-1">
-                  {Object.entries(timeEntries.byDayTask[toKey(selectedDay.date)]).map(([taskId, hours]) => {
-                    const task = todoList.find(t => t.id === taskId);
-                    return (
-                      <div key={taskId} className="flex justify-between rounded-lg bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 p-2 text-sm">
-                        <span className="text-emerald-900 dark:text-emerald-100 truncate flex-1 mr-2">{task?.title || `Task #${taskId}`}</span>
-                        <span className="font-semibold text-emerald-700 dark:text-emerald-300 shrink-0">{formatHours(hours)}h</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            <button onClick={() => setShowTaskAssignment(true)}
-              className="mt-3 w-full rounded-lg border border-dashed border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-950 px-4 py-2 text-sm font-medium text-indigo-600 dark:text-indigo-400 transition hover:bg-indigo-100 dark:hover:bg-indigo-900">
-              + Atribuir Tarefas
-            </button>
-
-            {selectedDay.expectedHours !== null && (
-              <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-700">
-                <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Horas de trabalho:</p>
-                <div className="flex gap-2">
-                  <div className="flex-1 rounded-lg bg-slate-100 dark:bg-slate-700 p-3 text-center">
-                    <p className="text-xs text-slate-600 dark:text-slate-400">Esperadas</p>
-                    <p className="text-lg font-bold text-slate-900 dark:text-slate-100">{selectedDay.expectedHours}h</p>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                    <div
+                      className={`h-full transition-all ${isOver ? "bg-amber-500" : isComplete ? "bg-emerald-500" : "bg-indigo-500"}`}
+                      style={{ width: `${progressPct}%` }}
+                    />
                   </div>
-                  <div className="flex-1 rounded-lg bg-slate-100 dark:bg-slate-700 p-3 text-center">
-                    <p className="text-xs text-slate-600 dark:text-slate-400">Registadas</p>
-                    <p className="text-lg font-bold text-slate-900 dark:text-slate-100">{timeEntries.byDay[toKey(selectedDay.date)] || 0}h</p>
+                  <div className="flex justify-between mt-1 text-[10px] text-slate-500 dark:text-slate-400">
+                    {remaining > 0 ? <span>Falta {formatHours(remaining)}h</span> : <span>Dia completo</span>}
+                    {isOver && <span className="text-amber-600 dark:text-amber-400">+{formatHours(actual - expected)}h acima</span>}
                   </div>
                 </div>
+              )}
 
-                <div className="flex gap-2 mt-3">
-                  <button onClick={() => setShowRecommendation(!showRecommendation)}
-                    className="flex-1 rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-600">
-                    {showRecommendation ? "Ocultar" : "Recomendacoes"}
+              {/* Tarefas atribuidas */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] uppercase font-semibold tracking-wide text-slate-500 dark:text-slate-400">
+                    Tarefas atribuidas {selectedDay.todos.length > 0 && <span className="text-slate-400">({selectedDay.todos.length})</span>}
+                  </p>
+                  <button
+                    onClick={() => setShowTaskAssignment(true)}
+                    className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
+                  >
+                    + Atribuir
                   </button>
-                  {(timeEntries.byDay[toKey(selectedDay.date)] || 0) > 0 && (
-                    <button onClick={() => setClearHoursModal(selectedDay.date)} disabled={isSavingHours}
-                      className="rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed">
-                      Limpar
-                    </button>
-                  )}
                 </div>
+                {selectedDay.todos.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {selectedDay.todos.map((todo) => {
+                      const weight = timelines[todo.id] ? getStatusWeightForDay(timelines[todo.id], dayKey, statusWeights) : null;
+                      const pipColor = weight === null ? "bg-slate-300 dark:bg-slate-600"
+                        : weight >= 0.8 ? "bg-emerald-500"
+                        : weight >= 0.4 ? "bg-amber-500"
+                        : weight > 0 ? "bg-orange-400"
+                        : "bg-slate-300 dark:bg-slate-600";
+                      return (
+                        <button
+                          key={todo.id}
+                          onClick={() => setSelectedTodo(todo)}
+                          className="group w-full flex items-center gap-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-[var(--surface-2)] dark:bg-slate-800/50 p-2.5 hover:border-indigo-300 dark:hover:border-indigo-700 hover:bg-indigo-50/40 dark:hover:bg-indigo-950/20 transition lift-on-hover"
+                        >
+                          <span className={`h-2 w-2 rounded-full shrink-0 ${pipColor}`} />
+                          <div className="flex-1 min-w-0 text-left">
+                            <p className="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{todo.title}</p>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="text-[10px] text-slate-500 dark:text-slate-400">#{todo.id}</span>
+                              {todo.status && <span className="text-[10px] text-slate-500 dark:text-slate-400">· {todo.status}</span>}
+                            </div>
+                          </div>
+                          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="text-slate-300 dark:text-slate-600 group-hover:text-indigo-500 dark:group-hover:text-indigo-400 transition shrink-0">
+                            <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-slate-200 dark:border-slate-700 p-4 text-center">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">Nenhuma tarefa atribuida.</p>
+                  </div>
+                )}
+              </div>
 
+              {/* Horas registadas */}
+              {byDayTaskEntries.length > 0 && (
+                <div>
+                  <p className="text-[10px] uppercase font-semibold tracking-wide text-slate-500 dark:text-slate-400 mb-2">Horas registadas</p>
+                  <div className="space-y-1">
+                    {byDayTaskEntries.map(([taskId, hours]) => {
+                      const task = todoList.find(t => t.id === taskId);
+                      return (
+                        <div key={taskId} className="flex items-center justify-between rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-900/60 p-2 text-xs">
+                          <span className="text-emerald-900 dark:text-emerald-200 truncate flex-1 mr-2">{task?.title || `Task #${taskId}`}</span>
+                          <span className="font-mono font-semibold text-emerald-700 dark:text-emerald-300 shrink-0">{formatHours(hours)}h</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Recommendations form */}
+              {expected !== null && showRecommendation && (
+                <QuickHoursForm
+                  allTasks={getActiveTasksForDay(monthDevelopmentTasks, dayKey)}
+                  pinnedTaskIds={getAssignmentsForDay(dayKey).map(a => a.taskId)}
+                  expectedHours={expected}
+                  actualHours={actual}
+                  meetingsTask={meetingsTask}
+                  meetingsTaskId={meetingsTaskId}
+                  meetingsHours={meetingsHours}
+                  isSaving={isSavingHours}
+                  dayKey={dayKey}
+                  timelines={timelines}
+                  statusWeights={statusWeights}
+                  onSave={(recs) => setConfirmationModal({ date: selectedDay.date, recommendations: recs })}
+                />
+              )}
+            </div>
+
+            {/* Sticky footer */}
+            {expected !== null && (
+              <div className="flex gap-2 p-4 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
                 <button
-                  onClick={() => { setSelectedDay(null); setShowClearMonth(true); }}
-                  disabled={isSavingHours}
-                  className="mt-2 w-full rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-950 px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 transition hover:bg-red-100 dark:hover:bg-red-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={() => setShowRecommendation(!showRecommendation)}
+                  className="flex-1 rounded-lg bg-indigo-500 px-3 py-2 text-xs font-semibold text-white transition hover:bg-indigo-600"
                 >
-                  Limpar Horas
+                  {showRecommendation ? "Ocultar recomendacoes" : "Ver recomendacoes"}
                 </button>
-
-                {showRecommendation && (
-                  <QuickHoursForm
-                    allTasks={getActiveTasksForDay(monthDevelopmentTasks, toKey(selectedDay.date))}
-                    pinnedTaskIds={getAssignmentsForDay(toKey(selectedDay.date)).map(a => a.taskId)}
-                    taskHistory={timeEntries.byTask}
-                    expectedHours={selectedDay.expectedHours || 0}
-                    actualHours={timeEntries.byDay[toKey(selectedDay.date)] || 0}
-                    meetingsTask={meetingsTask}
-                    meetingsTaskId={meetingsTaskId}
-                    isSaving={isSavingHours}
-                    onSave={(recs) => setConfirmationModal({ date: selectedDay.date, recommendations: recs })}
-                  />
+                <button
+                  onClick={() => {
+                    setPaletteAnchorDate(selectedDay.date);
+                    setPaletteRange("day");
+                    setPalettePrefill("");
+                    setSelectedDay(null);
+                    setPaletteOpen(true);
+                  }}
+                  title={`Abrir assistente IA para ${dayKey}`}
+                  className="flex items-center gap-1.5 rounded-lg border border-indigo-300 dark:border-indigo-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M2 4l3 8 2-4 4-2-9-2zM10 10l4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  IA
+                </button>
+                {actual > 0 && (
+                  <button
+                    onClick={() => setClearHoursModal(selectedDay.date)}
+                    disabled={isSavingHours}
+                    className="rounded-lg border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/30 px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/50 transition disabled:opacity-50"
+                  >
+                    Limpar
+                  </button>
                 )}
               </div>
             )}
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Confirmation modal */}
       {confirmationModal && (
@@ -710,7 +1058,6 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
         />
       )}
 
-      {/* Clear week modal */}
       {showClearMonth && (
         <ClearMonthModal
           currentYear={currentYear}
@@ -724,7 +1071,6 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
         />
       )}
 
-      {/* Task assignment modal */}
       {showTaskAssignment && selectedDay && (
         <TaskAssignmentModal
           dayLabel={selectedDay.date.toLocaleDateString("pt-PT", { weekday: "long", day: "numeric", month: "long" })}
@@ -736,7 +1082,6 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
         />
       )}
 
-      {/* Week fill modal */}
       {showWeekFill && (
         <WeekFillModal
           currentYear={currentYear}
@@ -750,6 +1095,8 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
           getExpectedHours={getExpectedHours}
           isHoliday={(dayKey) => holidayMap.has(dayKey)}
           isSaving={isSavingHours}
+          timelines={timelines}
+          statusWeights={statusWeights}
           onSave={saveMultipleDays}
           onClose={() => setShowWeekFill(false)}
         />
@@ -766,10 +1113,46 @@ export default function Calendar({ todoList = [], timeEntries = EMPTY_TIME_ENTRI
           getExpectedHours={getExpectedHours}
           isHoliday={(dayKey) => holidayMap.has(dayKey)}
           isSaving={isSavingHours}
+          timelines={timelines}
+          statusWeights={statusWeights}
           onSave={(entries) => { saveMultipleDays(entries); setShowMonthFill(false); }}
           onClose={() => setShowMonthFill(false)}
         />
       )}
-    </div>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => { setPaletteOpen(false); setPalettePrefill(""); setPaletteAnchorDate(null); }}
+        onSubmit={handlePaletteSubmit}
+        onCancel={handlePaletteCancel}
+        isProcessing={paletteProcessing}
+        defaultRange={paletteRange}
+        defaultText={palettePrefill || undefined}
+        hasAIConfigured={!!aiConfig}
+        hasGitLabConfigured={!!gitlabConfig}
+        onOpenSettings={() => setSettingsOpen(true)}
+        processingStage={paletteStage}
+        processingDetail={paletteDetail}
+        processingStartedAt={paletteStartedAt}
+        anchorDate={paletteAnchorDate}
+      />
+
+      {aiPreview && (
+        <AIPreviewModal
+          items={aiPreview}
+          allTasks={todoList}
+          onCancel={() => { setAiPreview(null); setAiReasoning(undefined); setAiWarnings(undefined); setAiRawResponse(undefined); setAiGitlabSummary(undefined); setAiUnmatched(undefined); setAiDebug(undefined); }}
+          onConfirm={saveAIDistribution}
+          isSaving={isSavingHours}
+          getExpectedHours={getExpectedHours}
+          reasoning={aiReasoning}
+          warnings={aiWarnings}
+          rawResponse={aiRawResponse}
+          gitlabSummary={aiGitlabSummary}
+          unmatchedActivities={aiUnmatched}
+          debug={aiDebug}
+        />
+      )}
+    </AppShell>
   );
 }

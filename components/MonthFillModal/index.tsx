@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import type { TodoItem, Recommendation, TimeEntriesData } from "@/types";
+import type { TodoItem, Recommendation, TimeEntriesData, TaskStatusTimeline, StatusWeightConfig } from "@/types";
 import { formatHours, toKey, getDaysInMonth, WEEKDAYS_PT, MONTHS_PT } from "@/lib/calendar-utils";
 import { calculateSmartRecommendations } from "@/lib/recommendations";
 import { getActiveTasksForDay } from "@/lib/task-filtering";
@@ -28,6 +28,8 @@ type MonthFillModalProps = {
   isSaving: boolean;
   onSave: (dayEntries: { date: Date; recommendations: Recommendation[] }[]) => void;
   onClose: () => void;
+  timelines?: Record<string, TaskStatusTimeline>;
+  statusWeights?: StatusWeightConfig;
 };
 
 function getMonthWorkDays(
@@ -79,7 +81,7 @@ function groupByWeeks(days: MonthDay[]): MonthDay[][] {
 export default function MonthFillModal({
   currentYear, currentMonth, timeEntries, allTasks,
   meetingsTask, meetingsTaskId, getExpectedHours, isHoliday,
-  isSaving, onSave, onClose,
+  isSaving, onSave, onClose, timelines, statusWeights,
 }: MonthFillModalProps) {
   const days = useMemo(() =>
     getMonthWorkDays(currentYear, currentMonth, isHoliday, getExpectedHours, timeEntries),
@@ -103,19 +105,20 @@ export default function MonthFillModal({
       const recs = calculateSmartRecommendations({
         tasks: activeTasks,
         pinnedTaskIds: [],
-        taskHistory: timeEntries.byTask,
         expectedHours: day.expectedHours,
         alreadyRegistered: day.actualHours,
         meetingsTask,
         meetingsTaskId,
         dayKey: day.dayKey,
+        timelines,
+        statusWeights,
       });
       result[day.dayKey] = recs.filter(r => r.selected && r.hours > 0).map(r => ({
         taskId: r.taskId, taskTitle: r.taskTitle, hours: r.hours,
       }));
     }
     return result;
-  }, [days, selectedKeys, allTasks, timeEntries, meetingsTask, meetingsTaskId]);
+  }, [days, selectedKeys, allTasks, timeEntries, meetingsTask, meetingsTaskId, timelines, statusWeights]);
 
   const selectedDays = days.filter(d => selectedKeys.has(d.dayKey));
   const totalHoursToAdd = selectedDays.reduce((sum, d) => sum + d.hoursToAdd, 0);

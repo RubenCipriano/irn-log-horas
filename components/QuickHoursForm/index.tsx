@@ -1,48 +1,56 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { TodoItem, SmartRecommendation, TaskHistory, Recommendation } from "@/types";
+import type { TodoItem, SmartRecommendation, Recommendation, TaskStatusTimeline, StatusWeightConfig } from "@/types";
 import { formatHours } from "@/lib/calendar-utils";
 import { calculateSmartRecommendations } from "@/lib/recommendations";
 
 type QuickHoursFormProps = {
   allTasks: TodoItem[];
   pinnedTaskIds: string[];
-  taskHistory: Record<string, TaskHistory>;
   expectedHours: number;
   actualHours: number;
   meetingsTask: TodoItem | null;
   meetingsTaskId: string;
+  meetingsHours?: number;
   isSaving: boolean;
   onSave: (recommendations: Recommendation[]) => void;
+  dayKey?: string;
+  timelines?: Record<string, TaskStatusTimeline>;
+  statusWeights?: StatusWeightConfig;
 };
 
 export default function QuickHoursForm({
   allTasks,
   pinnedTaskIds,
-  taskHistory,
   expectedHours,
   actualHours,
   meetingsTask,
   meetingsTaskId,
+  meetingsHours,
   isSaving,
   onSave,
+  dayKey,
+  timelines,
+  statusWeights,
 }: QuickHoursFormProps) {
   const [recommendations, setRecommendations] = useState<SmartRecommendation[]>([]);
 
-  // Calculate smart recommendations on mount
   useEffect(() => {
     const recs = calculateSmartRecommendations({
       tasks: allTasks,
       pinnedTaskIds,
-      taskHistory,
       expectedHours,
       alreadyRegistered: actualHours,
       meetingsTask,
       meetingsTaskId,
+      meetingsHours,
+      dayKey,
+      timelines,
+      statusWeights,
     });
     setRecommendations(recs);
-  }, [allTasks, pinnedTaskIds, taskHistory, expectedHours, actualHours, meetingsTask, meetingsTaskId]);
+  }, [allTasks, pinnedTaskIds, expectedHours, actualHours, meetingsTask, meetingsTaskId, meetingsHours, dayKey, timelines, statusWeights]);
 
   const hoursNeeded = Math.max(0, expectedHours - actualHours);
   const selectedRecs = recommendations.filter(r => r.selected);
@@ -115,12 +123,16 @@ export default function QuickHoursForm({
     );
   }
 
-  const hasHistoryBased = recommendations.some(r => r.source === "history" && r.selected);
-
   const sourceLabel = (source: SmartRecommendation["source"]) => {
     if (source === "pinned") return "Atribuida";
-    if (source === "history") return "Historico";
+    if (source === "activity") return "Em curso";
     return "";
+  };
+
+  const sourceColor = (source: SmartRecommendation["source"]) => {
+    if (source === "pinned") return "text-indigo-600 dark:text-indigo-400";
+    if (source === "activity") return "text-emerald-600 dark:text-emerald-400";
+    return "text-slate-500";
   };
 
   return (
@@ -128,16 +140,9 @@ export default function QuickHoursForm({
       <p className="text-sm font-medium text-indigo-900 dark:text-indigo-100 mb-1">
         Em que trabalhaste?
       </p>
-      {hasHistoryBased && (
-        <p className="text-xs text-amber-600 dark:text-amber-400 mb-3">
-          Horas pre-preenchidas com base no teu historico
-        </p>
-      )}
-      {!hasHistoryBased && (
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
-          Seleciona as tarefas e define as horas
-        </p>
-      )}
+      <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+        Seleciona as tarefas e define as horas
+      </p>
 
       <div className="space-y-1.5 max-h-64 overflow-y-auto mb-3">
         {recommendations.map((rec, idx) => (
@@ -159,9 +164,7 @@ export default function QuickHoursForm({
             <div className="flex-1 min-w-0">
               <p className="truncate text-slate-900 dark:text-slate-100">{rec.taskTitle}</p>
               {rec.source !== "available" && (
-                <span className={`text-[10px] font-medium ${
-                  rec.source === "pinned" ? "text-indigo-600 dark:text-indigo-400" : "text-amber-600 dark:text-amber-400"
-                }`}>
+                <span className={`text-[10px] font-medium ${sourceColor(rec.source)}`}>
                   {sourceLabel(rec.source)}
                 </span>
               )}
@@ -193,6 +196,13 @@ export default function QuickHoursForm({
         )}
       </div>
 
+      {/* Daily-cap guard: total + already-registered exceeds expected */}
+      {(totalSelected + actualHours) > expectedHours && expectedHours > 0 && (
+        <div className="mb-3 rounded-lg border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/30 p-2 text-xs text-rose-700 dark:text-rose-300">
+          Estas a passar <strong>{formatHours((totalSelected + actualHours) - expectedHours)}h</strong> do limite diario ({formatHours(expectedHours)}h). Reduz as horas antes de guardar.
+        </div>
+      )}
+
       {/* Actions */}
       <div className="flex gap-2">
         {shortfall > 0 && selectedRecs.length > 0 && (
@@ -205,7 +215,8 @@ export default function QuickHoursForm({
         )}
         <button
           onClick={handleSave}
-          disabled={isSaving || selectedRecs.length === 0}
+          disabled={isSaving || selectedRecs.length === 0 || (totalSelected + actualHours) > expectedHours}
+          title={(totalSelected + actualHours) > expectedHours ? "Ajusta as horas para nao passar o limite diario" : ""}
           className="flex-1 rounded-lg bg-green-500 px-3 py-2 text-sm font-medium text-white transition hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isSaving ? "Guardando..." : "Guardar Horas"}

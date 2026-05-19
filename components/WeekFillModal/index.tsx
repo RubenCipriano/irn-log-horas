@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import type { TodoItem, Recommendation, TimeEntriesData } from "@/types";
+import type { TodoItem, Recommendation, TimeEntriesData, TaskStatusTimeline, StatusWeightConfig } from "@/types";
 import { formatHours, toKey, getWeekDays, WEEKDAYS_PT, MONTHS_PT } from "@/lib/calendar-utils";
 import { calculateSmartRecommendations } from "@/lib/recommendations";
 import { getActiveTasksForDay } from "@/lib/task-filtering";
@@ -29,6 +29,8 @@ type WeekFillModalProps = {
   isSaving: boolean;
   onSave: (dayEntries: { date: Date; recommendations: Recommendation[] }[]) => void;
   onClose: () => void;
+  timelines?: Record<string, TaskStatusTimeline>;
+  statusWeights?: StatusWeightConfig;
 };
 
 function formatWeekRange(ref: Date): string {
@@ -51,6 +53,8 @@ export default function WeekFillModal({
   isSaving,
   onSave,
   onClose,
+  timelines,
+  statusWeights,
 }: WeekFillModalProps) {
   const [referenceDate, setReferenceDate] = useState<Date>(today);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
@@ -94,19 +98,20 @@ export default function WeekFillModal({
       const recs = calculateSmartRecommendations({
         tasks: activeTasks,
         pinnedTaskIds: [],
-        taskHistory: timeEntries.byTask,
         expectedHours: day.expectedHours,
         alreadyRegistered: day.actualHours,
         meetingsTask,
         meetingsTaskId,
         dayKey: day.dayKey,
+        timelines,
+        statusWeights,
       });
       result[day.dayKey] = recs.filter(r => r.selected && r.hours > 0).map(r => ({
         taskId: r.taskId, taskTitle: r.taskTitle, hours: r.hours,
       }));
     }
     return result;
-  }, [weekDays, selectedKeys, allTasks, timeEntries, meetingsTask, meetingsTaskId]);
+  }, [weekDays, selectedKeys, allTasks, timeEntries, meetingsTask, meetingsTaskId, timelines, statusWeights]);
 
   const selectedDays = weekDays.filter(d => selectedKeys.has(d.dayKey));
 

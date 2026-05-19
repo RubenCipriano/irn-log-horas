@@ -26,7 +26,18 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const addToast = useCallback((message: string, type: ToastType) => {
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
-    setToasts(prev => [...prev, { id, message, type }]);
+    setToasts(prev => {
+      // Cap at 4 concurrent toasts: drop oldest when full.
+      const next = [...prev, { id, message, type }];
+      if (next.length > 4) {
+        const dropped = next.shift();
+        if (dropped) {
+          const t = timers.current.get(dropped.id);
+          if (t) { clearTimeout(t); timers.current.delete(dropped.id); }
+        }
+      }
+      return next;
+    });
     const timer = setTimeout(() => removeToast(id), 4000);
     timers.current.set(id, timer);
   }, [removeToast]);

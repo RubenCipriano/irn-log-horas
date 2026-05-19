@@ -1,33 +1,146 @@
 import { NextRequest, NextResponse } from "next/server";
+import { DEFAULT_STATUS_WEIGHTS, deriveActiveBounds, inferGaps } from "@/lib/status-timeline";
+import type { StatusSegment, TaskStatusTimeline } from "@/types";
+import { DEFAULT_TIMELINE_INFERENCE } from "@/types";
 
 // Function to parse ISO 8601 duration format (e.g., PT8H, PT30M, PT1H30M)
 function parseIsoDuration(duration: string): number {
   if (!duration) return 0;
-  
+
   const regex = /PT(?:(\d+)H)?(?:(\d+)M)?/;
   const match = duration.match(regex);
-  
+
   if (!match) return 0;
-  
+
   const hours = match[1] ? parseInt(match[1], 10) : 0;
   const minutes = match[2] ? parseInt(match[2], 10) : 0;
-  
+
   return hours + minutes / 60;
 }
 
-// If current task status is terminal, set activeUntil = updatedAt
-function applyStatusFallback(todo: any, terminalStatuses: string[]) {
-  const currentStatus = (todo.status || "").toLowerCase();
-  if (terminalStatuses.some(s => currentStatus.includes(s)) && todo.updatedAt) {
-    return { ...todo, activeUntil: todo.updatedAt };
+function shiftDay(dayKey: string, deltaDays: number): string {
+  const d = new Date(dayKey + "T00:00:00");
+  d.setDate(d.getDate() + deltaDays);
+  return d.toISOString().slice(0, 10);
+}
+
+// Strip basic markdown emphasis markers and unescape so PT/EN regex can match.
+function stripMarkdown(raw: string): string {
+  return raw.replace(/[*_`]+/g, "").replace(/\s+/g, " ").trim();
+}
+
+// Strip HTML tags for parsing detail.html bodies.
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+}
+
+// Try to extract the "new status" from a detail object using all known shapes.
+// Returns null if this detail isn't a status change at all.
+function extractStatusFromDetail(detail: Record<string, unknown>): string | null {
+  // 1. Structured property field
+  const property = (detail.property as string | undefined) || (detail.fieldName as string | undefined);
+  const dtype = detail._type as string | undefined;
+  if (property === "status" || dtype === "StatusChangedActivity") {
+    const links = detail._links as { newValue?: { title?: string } } | undefined;
+    const newValue = links?.newValue?.title || (detail.newValue as string | undefined) || "";
+    const trimmed = newValue.toString().trim();
+    if (trimmed) return trimmed;
   }
-  return todo;
+
+  // 2. Parse markdown-formatted detail.raw (PT and EN)
+  const rawSrc = (detail.raw as string | undefined) || "";
+  if (rawSrc) {
+    const text = stripMarkdown(rawSrc);
+    const pt = text.match(/situa[çc][aã]o\s+alterad[oa]?\s+de\s+.+?\s+para\s+(.+?)(?:\s*$|\.|\n|<)/i);
+    if (pt) return pt[1].trim();
+    const en = text.match(/status\s+changed?\s+from\s+.+?\s+to\s+(.+?)(?:\s*$|\.|\n|<)/i);
+    if (en) return en[1].trim();
+  }
+
+  // 3. Fallback: parse detail.html with tags stripped
+  const htmlSrc = (detail.html as string | undefined) || "";
+  if (htmlSrc) {
+    const text = stripHtml(htmlSrc);
+    const pt = text.match(/situa[çc][aã]o\s+alterad[oa]?\s+de\s+.+?\s+para\s+(.+?)(?:\s*$|\.|\n)/i);
+    if (pt) return pt[1].trim();
+    const en = text.match(/status\s+changed?\s+from\s+.+?\s+to\s+(.+?)(?:\s*$|\.|\n)/i);
+    if (en) return en[1].trim();
+  }
+
+  return null;
+}
+
+// Build a TaskStatusTimeline from a flat ordered list of transitions.
+// Each transition is the date a NEW status became active.
+function buildTimeline(
+  taskId: string,
+  createdAt: string,
+  currentStatus: string,
+  updatedAt: string | undefined,
+  transitions: { date: string; newStatus: string }[],
+): TaskStatusTimeline {
+  // Drop transitions dated before createdAt (OpenProject sometimes reports out-of-range timestamps).
+  const filtered = transitions.filter(t => t.date && t.newStatus && t.date >= createdAt);
+
+  // De-duplicate by date: if multiple transitions land on the same day, keep the LAST one.
+  const byDate = new Map<string, string>();
+  for (const t of filtered) byDate.set(t.date, t.newStatus);
+
+  const sorted = Array.from(byDate.entries())
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([date, newStatus]) => ({ date, newStatus }));
+
+  // Always start at createdAt. Prepend "novo" if the first transition is later.
+  if (sorted.length === 0 || sorted[0].date > createdAt) {
+    sorted.unshift({ date: createdAt, newStatus: "novo" });
+  } else if (sorted[0].date === createdAt && sorted[0].newStatus.toLowerCase().includes("novo") === false) {
+    // First real transition coincides with createdAt and isn't "novo" — that's fine, no synthetic prepend.
+  }
+
+  // If the last recorded transition doesn't match currentStatus, append a synthetic one
+  // dated at updatedAt (when OpenProject last touched the work package), strictly after
+  // the previous transition. Falls back to "tomorrow" of the last transition if updatedAt
+  // is before/equal to it.
+  const lastNew = sorted[sorted.length - 1].newStatus.toLowerCase();
+  if (lastNew !== currentStatus.toLowerCase()) {
+    const lastDate = sorted[sorted.length - 1].date;
+    let appendDate = updatedAt && updatedAt > lastDate ? updatedAt : shiftDay(lastDate, 1);
+    if (appendDate < createdAt) appendDate = createdAt;
+    sorted.push({ date: appendDate, newStatus: currentStatus });
+  }
+
+  const segments: StatusSegment[] = sorted.map((t, i) => {
+    const next = sorted[i + 1];
+    let toDate: string | null = next ? shiftDay(next.date, -1) : null;
+    // Clamp end-before-start (1-day segment when next.date <= t.date).
+    if (toDate !== null && toDate < t.date) toDate = t.date;
+    return {
+      status: t.newStatus,
+      statusLower: t.newStatus.toLowerCase(),
+      fromDate: t.date,
+      toDate,
+    };
+  });
+
+  // Collapse consecutive segments with the same status.
+  const collapsed: StatusSegment[] = [];
+  for (const seg of segments) {
+    const prev = collapsed[collapsed.length - 1];
+    if (prev && prev.statusLower === seg.statusLower) {
+      prev.toDate = seg.toDate;
+    } else {
+      collapsed.push(seg);
+    }
+  }
+
+  return { taskId, segments: collapsed };
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { token, url } = body;
+    const inferenceConfig = body.inferenceConfig || DEFAULT_TIMELINE_INFERENCE;
 
     if (!token || !url) {
       return NextResponse.json(
@@ -50,7 +163,7 @@ export async function POST(request: NextRequest) {
 
     if (!userResponse.ok) {
       return NextResponse.json(
-        { 
+        {
           error: "Invalid token or unable to connect to OpenProject",
         },
         { status: userResponse.status }
@@ -62,7 +175,7 @@ export async function POST(request: NextRequest) {
     // Fetch work packages (tasks) assigned to the user — only open status
     const wpFilters = encodeURIComponent(JSON.stringify([
       { assignee: { operator: "=", values: [user.id.toString()] } },
-      { status: { operator: "o", values: [] } }, // "o" = open statuses only
+      { status: { operator: "o", values: [] } },
     ]));
     const workPackagesResponse = await fetch(
       `${baseUrl}/api/v3/work_packages?filters=${wpFilters}&pageSize=1000`,
@@ -75,7 +188,7 @@ export async function POST(request: NextRequest) {
       workPackages = workPackagesData._embedded?.elements || [];
     }
 
-    // Transform work packages into todos (activeFrom defaults to createdAt)
+    // Transform work packages into todos
     const todos = workPackages.map((wp: any) => ({
       id: wp.id.toString(),
       title: wp.subject,
@@ -84,88 +197,80 @@ export async function POST(request: NextRequest) {
       status: wp._links?.status?.title || wp._embedded?.status?.name || "Unknown",
       sprint: wp._links?.version?.title || undefined,
       updatedAt: wp.updatedAt ? wp.updatedAt.split("T")[0] : undefined,
-      isClosed: false, // API already filters open only
-      activeFrom: wp.createdAt ? wp.createdAt.split("T")[0] : null,
-      activeUntil: null as string | null,
+      isClosed: false,
+      createdAt: wp.createdAt ? wp.createdAt.split("T")[0] : null,
     }));
 
-    // Fetch activity history for each task in parallel to refine activeFrom/activeUntil
-    const terminalStatuses = ["desenvolvido", "developed", "fechado", "closed", "rejected", "rejeitado", "on hold", "onhold"];
-    const todosWithHistory = await Promise.all(todos.map(async (todo: any) => {
+    // Fetch activity history for each task and build a full status timeline.
+    const todosWithTimeline = await Promise.all(todos.map(async (todo: any) => {
+      const createdAt = todo.createdAt || todo.updatedAt || new Date().toISOString().slice(0, 10);
+      const transitions: { date: string; newStatus: string }[] = [];
+
       try {
         const activitiesRes = await fetch(`${baseUrl}/api/v3/work_packages/${todo.id}/activities`, { headers });
-        if (!activitiesRes.ok) {
-          // Fallback: if current status is terminal, use updatedAt as activeUntil
-          return applyStatusFallback(todo, terminalStatuses);
-        }
+        if (activitiesRes.ok) {
+          const activitiesData = await activitiesRes.json();
+          const elements = activitiesData._embedded?.elements || [];
 
-        const activitiesData = await activitiesRes.json();
-        const elements = activitiesData._embedded?.elements || [];
+          for (const entry of elements) {
+            const entryDate = entry.createdAt?.split("T")[0];
+            if (!entryDate) continue;
 
-        let activeFrom: string | null = todo.activeFrom;
-        let activeUntil: string | null = null;
-        let foundStatusChange = false;
-
-        for (const entry of elements) {
-          const entryDate = entry.createdAt?.split("T")[0];
-          if (!entryDate) continue;
-
-          // Use creation activity date if available
-          if (entry._type?.includes("Creation")) {
-            if (!activeFrom || entryDate > activeFrom) activeFrom = entryDate;
-            continue;
-          }
-
-          // Check structured details for status changes
-          const details = entry._embedded?.details || entry.details || [];
-          for (const detail of details) {
-            const isStatusChange = detail.property === "status" || detail.fieldName === "status"
-              || detail._type === "StatusChangedActivity"
-              || (detail.raw && typeof detail.raw === "string" && detail.raw.toLowerCase().includes("status"));
-            if (isStatusChange) {
-              foundStatusChange = true;
-              const newStatus = (detail._links?.newValue?.title || detail.newValue || "").toLowerCase();
-              if (terminalStatuses.some(s => newStatus.includes(s))) {
-                activeUntil = entryDate;
-              } else {
-                activeUntil = null;
+            const details = entry._embedded?.details || entry.details || [];
+            let foundInDetails = false;
+            for (const detail of details) {
+              const newStatus = extractStatusFromDetail(detail);
+              if (newStatus) {
+                transitions.push({ date: entryDate, newStatus });
+                foundInDetails = true;
               }
             }
-          }
 
-          // Fallback: parse activity comment/note text for status changes
-          // OpenProject sometimes puts status changes as text like "Status changed from X to Y"
-          if (!foundStatusChange) {
-            const comment = (entry.comment?.raw || entry.note || "").toLowerCase();
-            const htmlComment = (entry.comment?.html || "").toLowerCase();
-            const texts = [comment, htmlComment];
-            for (const text of texts) {
-              // Match patterns like "situação alterado de X para Y" or "status changed from X to Y"
-              const ptMatch = text.match(/situa[çc][aã]o\s+alterad[oa]\s+de\s+.+?\s+para\s+(.+?)(\s|$|<)/);
-              const enMatch = text.match(/status\s+changed?\s+(?:from\s+.+?\s+to\s+)?(.+?)(\s|$|<)/);
-              const statusMatch = ptMatch || enMatch;
-              if (statusMatch) {
-                foundStatusChange = true;
-                const newStatus = statusMatch[1].trim().toLowerCase();
-                if (terminalStatuses.some(s => newStatus.includes(s))) {
-                  activeUntil = entryDate;
-                } else {
-                  activeUntil = null;
+            // Fall back to entry-level comment fields only if details yielded nothing.
+            if (!foundInDetails) {
+              const candidates = [
+                entry.comment?.raw,
+                entry.note,
+                entry.comment?.html ? stripHtml(entry.comment.html) : "",
+              ];
+              for (const raw of candidates) {
+                if (!raw) continue;
+                const text = stripMarkdown(String(raw));
+                const pt = text.match(/situa[çc][aã]o\s+alterad[oa]?\s+de\s+.+?\s+para\s+(.+?)(?:\s*$|\.|\n|<)/i);
+                const en = text.match(/status\s+changed?\s+from\s+.+?\s+to\s+(.+?)(?:\s*$|\.|\n|<)/i);
+                const m = pt || en;
+                if (m) {
+                  transitions.push({ date: entryDate, newStatus: m[1].trim() });
+                  break;
                 }
               }
             }
           }
         }
-
-        // If no status change found in activities, use current status as fallback
-        if (!foundStatusChange) {
-          return applyStatusFallback({ ...todo, activeFrom }, terminalStatuses);
-        }
-
-        return { ...todo, activeFrom, activeUntil };
       } catch {
-        return applyStatusFallback(todo, terminalStatuses);
+        // Network/parse failure — fall through with whatever transitions we have (possibly none)
       }
+
+      const rawTimeline = buildTimeline(todo.id, createdAt, todo.status || "Novo", todo.updatedAt, transitions);
+      const timeline: TaskStatusTimeline = {
+        taskId: rawTimeline.taskId,
+        segments: inferGaps(rawTimeline.segments, inferenceConfig),
+      };
+      const bounds = deriveActiveBounds(timeline, DEFAULT_STATUS_WEIGHTS);
+
+      return {
+        id: todo.id,
+        title: todo.title,
+        date: todo.date,
+        url: todo.url,
+        status: todo.status,
+        sprint: todo.sprint,
+        updatedAt: todo.updatedAt,
+        isClosed: false,
+        activeFrom: bounds.activeFrom,
+        activeUntil: bounds.activeUntil,
+        timeline,
+      };
     }));
 
     // Fetch sprint/version details (dates) from unique version hrefs
@@ -214,15 +319,12 @@ export async function POST(request: NextRequest) {
         const dateStr = entry.spentOn;
         if (!dateStr) return;
 
-        // Aggregate by day
         byDay[dateStr] = (byDay[dateStr] || 0) + hours;
 
-        // Extract work package ID from href (e.g., "/api/v3/work_packages/4521")
         const wpHref = entry._links?.workPackage?.href || "";
         const wpId = wpHref.split("/").pop();
         if (!wpId) return;
 
-        // Aggregate by task
         if (!byTask[wpId]) {
           byTask[wpId] = { totalHours: 0, entryCount: 0, lastUsed: dateStr };
         }
@@ -232,16 +334,13 @@ export async function POST(request: NextRequest) {
           byTask[wpId].lastUsed = dateStr;
         }
 
-        // Aggregate by day+task
         if (!byDayTask[dateStr]) byDayTask[dateStr] = {};
         byDayTask[dateStr][wpId] = (byDayTask[dateStr][wpId] || 0) + hours;
       });
     }
 
-    // Calculate avgHoursPerDay for each task
     const byTaskWithAvg: { [key: string]: { totalHours: number; entryCount: number; lastUsed: string; avgHoursPerDay: number } } = {};
     for (const [taskId, data] of Object.entries(byTask)) {
-      // Count unique days this task was logged
       const uniqueDays = Object.keys(byDayTask).filter(day => byDayTask[day]?.[taskId]).length;
       byTaskWithAvg[taskId] = {
         ...data,
@@ -256,7 +355,7 @@ export async function POST(request: NextRequest) {
         name: user.name,
         email: user.email,
       },
-      todos: todosWithHistory,
+      todos: todosWithTimeline,
       timeEntries: {
         byDay,
         byTask: byTaskWithAvg,
@@ -275,8 +374,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-
-
-
-
-

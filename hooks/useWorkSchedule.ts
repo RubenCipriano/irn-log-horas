@@ -5,7 +5,7 @@ import type { WorkSchedule } from "@/types";
 
 const DEFAULT_SCHEDULE: WorkSchedule = {
   summer: { monThu: 7, fri: 9 },
-  winter: { monThu: 9, fri: 9 },
+  winter: { monThu: 9, fri: 7 },
   summerMonths: [3, 9], // April (index 3) through August (index 8), i.e., [3, 9)
 };
 

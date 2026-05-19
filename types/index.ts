@@ -1,5 +1,37 @@
 // Shared types for the IRN Log Horas application
 
+export type StatusSegment = {
+  status: string;          // original case, e.g. "Em Desenvolvimento"
+  statusLower: string;     // normalized lowercase for lookup
+  fromDate: string;        // "YYYY-MM-DD" inclusive
+  toDate: string | null;   // "YYYY-MM-DD" inclusive, null = open-ended (current status)
+  inferred?: boolean;      // true if synthesized to fill a Novo → Desenvolvido gap
+};
+
+// Inference config for filling Novo → terminal gaps with a synthetic active-dev segment.
+export type TimelineInferenceConfig = {
+  enabled: boolean;
+  starterStates: string[];   // lowercase: ["novo", "new"]
+  terminalStates: string[];  // lowercase: ["desenvolvido", "developed", "fechado", "closed"]
+  fillState: string;         // status label used for the synthetic segment
+};
+
+export const DEFAULT_TIMELINE_INFERENCE: TimelineInferenceConfig = {
+  enabled: true,
+  starterStates: ["novo", "new"],
+  terminalStates: ["desenvolvido", "developed", "fechado", "closed", "rejeitado", "rejected"],
+  fillState: "Em Desenvolvimento",
+};
+
+export type TaskStatusTimeline = {
+  taskId: string;
+  segments: StatusSegment[]; // ordered ascending by fromDate
+};
+
+// Status name (lowercase) -> weight in [0, 1]
+// 1.0 = full hours; 0 = excluded (terminal/blocked)
+export type StatusWeightConfig = Record<string, number>;
+
 export type TodoItem = {
   id: string;
   title: string;
@@ -9,8 +41,9 @@ export type TodoItem = {
   sprint?: string;
   updatedAt?: string;
   isClosed?: boolean;
-  activeFrom?: string | null;   // "YYYY-MM-DD" — first work status date
-  activeUntil?: string | null;  // "YYYY-MM-DD" — date it became Desenvolvido/Fechada (null = still active)
+  activeFrom?: string | null;   // "YYYY-MM-DD" — derived from timeline for back-compat
+  activeUntil?: string | null;  // "YYYY-MM-DD" — derived from timeline for back-compat
+  timeline?: TaskStatusTimeline; // full status history (optional for old callers)
 };
 
 export type Holiday = {
@@ -74,8 +107,41 @@ export type SmartRecommendation = {
   taskTitle: string;
   hours: number;
   selected: boolean;
-  source: "pinned" | "history" | "available";
+  source: "pinned" | "available" | "activity";
 };
 
 export type ToastType = "success" | "error" | "warning";
 export type Toast = { id: string; message: string; type: ToastType };
+
+// AI provider configuration (persisted in localStorage)
+export type AIProviderConfig =
+  | { kind: "gemini"; apiKey: string; model?: string }
+  | { kind: "groq"; apiKey: string; model?: string }
+  | { kind: "ollama"; baseUrl: string; model: string }
+  | { kind: "openrouter"; apiKey: string; model: string }
+  | { kind: "openai-compat"; baseUrl: string; apiKey?: string; model: string; headers?: Record<string, string> }
+  | { kind: "anthropic"; apiKey: string; model?: string };
+
+export type AIDistributionItem = {
+  taskId: string;
+  taskTitle: string;
+  dayKey: string;
+  hours: number;
+  reason: string;
+  source?: "ai" | "gitlab" | "history" | "manual";
+};
+
+export type GitLabConfig = {
+  baseUrl: string;       // e.g. https://gitlab.justica.gov.pt
+  accessToken: string;
+  username?: string;     // resolved from /user endpoint, cached locally
+};
+
+export type GitLabActivity = {
+  type: "commit" | "merge_request";
+  title: string;
+  project: string;
+  createdAt: string;     // ISO 8601
+  refIds: string[];      // OpenProject task IDs parsed from title/branch (e.g. ["32227"])
+  url: string;
+};
