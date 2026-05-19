@@ -189,17 +189,24 @@ export async function POST(request: NextRequest) {
     }
 
     // Transform work packages into todos
-    const todos = workPackages.map((wp: any) => ({
-      id: wp.id.toString(),
-      title: wp.subject,
-      date: wp.startDate || wp.dueDate || wp.createdAt || null,
-      url: wp._links?.self?.href,
-      status: wp._links?.status?.title || wp._embedded?.status?.name || "Unknown",
-      sprint: wp._links?.version?.title || undefined,
-      updatedAt: wp.updatedAt ? wp.updatedAt.split("T")[0] : undefined,
-      isClosed: false,
-      createdAt: wp.createdAt ? wp.createdAt.split("T")[0] : null,
-    }));
+    const todos = workPackages.map((wp: any) => {
+      // Extract statusId from "/api/v3/statuses/N" href so we can PATCH later.
+      const statusHref: string = wp._links?.status?.href || "";
+      const statusId = statusHref.split("/").pop() || undefined;
+      return {
+        id: wp.id.toString(),
+        title: wp.subject,
+        date: wp.startDate || wp.dueDate || wp.createdAt || null,
+        url: wp._links?.self?.href,
+        status: wp._links?.status?.title || wp._embedded?.status?.name || "Unknown",
+        statusId,
+        lockVersion: typeof wp.lockVersion === "number" ? wp.lockVersion : undefined,
+        sprint: wp._links?.version?.title || undefined,
+        updatedAt: wp.updatedAt ? wp.updatedAt.split("T")[0] : undefined,
+        isClosed: false,
+        createdAt: wp.createdAt ? wp.createdAt.split("T")[0] : null,
+      };
+    });
 
     // Fetch activity history for each task and build a full status timeline.
     const todosWithTimeline = await Promise.all(todos.map(async (todo: any) => {
@@ -264,6 +271,8 @@ export async function POST(request: NextRequest) {
         date: todo.date,
         url: todo.url,
         status: todo.status,
+        statusId: todo.statusId,
+        lockVersion: todo.lockVersion,
         sprint: todo.sprint,
         updatedAt: todo.updatedAt,
         isClosed: false,
@@ -348,6 +357,27 @@ export async function POST(request: NextRequest) {
       };
     }
 
+    // Fetch the global statuses list once per session. Used by the UI to
+    // populate the status dropdown in TaskModal and the columns in the Kanban view.
+    let availableStatuses: Array<{ id: string; name: string; isClosed: boolean; color?: string; position?: number }> = [];
+    try {
+      const statusesResponse = await fetch(`${baseUrl}/api/v3/statuses`, { headers });
+      if (statusesResponse.ok) {
+        const statusesData = await statusesResponse.json();
+        const elements = statusesData._embedded?.elements || [];
+        availableStatuses = elements.map((s: any) => ({
+          id: s.id?.toString() || "",
+          name: s.name || "",
+          isClosed: Boolean(s.isClosed),
+          color: typeof s.color === "string" ? s.color : undefined,
+          position: typeof s.position === "number" ? s.position : undefined,
+        })).filter((s: { id: string; name: string }) => s.id && s.name);
+        availableStatuses.sort((a, b) => (a.position ?? 999) - (b.position ?? 999));
+      }
+    } catch {
+      // Don't fail the whole login if statuses can't be fetched; UI will fall back gracefully.
+    }
+
     const response = {
       success: true,
       user: {
@@ -362,6 +392,7 @@ export async function POST(request: NextRequest) {
         byDayTask,
       },
       sprints,
+      availableStatuses,
     };
 
     return NextResponse.json(response);

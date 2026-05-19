@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Calendar from "@/components/Calendar";
-import type { TodoItem, TimeEntriesData, SprintInfo } from "@/types";
+import type { TodoItem, TimeEntriesData, SprintInfo, AvailableStatus } from "@/types";
 
 const EMPTY_TIME_ENTRIES: TimeEntriesData = { byDay: {}, byTask: {}, byDayTask: {} };
 
@@ -32,6 +32,7 @@ export default function Home() {
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [timeEntries, setTimeEntries] = useState<TimeEntriesData>(EMPTY_TIME_ENTRIES);
   const [sprints, setSprints] = useState<SprintInfo[]>([]);
+  const [availableStatuses, setAvailableStatuses] = useState<AvailableStatus[]>([]);
 
   const fetchTodos = async (authToken: string, authUrl: string) => {
     setIsLoading(true);
@@ -60,6 +61,7 @@ export default function Home() {
         setTodos(todosWithDates);
         setTimeEntries(data.timeEntries || EMPTY_TIME_ENTRIES);
         setSprints(data.sprints || []);
+        setAvailableStatuses(Array.isArray(data.availableStatuses) ? data.availableStatuses : []);
         if (data.user) setUser(data.user);
       }
     } catch {
@@ -146,9 +148,11 @@ export default function Home() {
         todoList={todos}
         timeEntries={timeEntries}
         sprints={sprints}
+        availableStatuses={availableStatuses}
         isLoading={isLoading}
         onMonthChange={() => fetchTodos(token, url)}
         onTimeEntriesUpdate={(updater) => setTimeEntries(updater)}
+        onTodosUpdate={(updater) => setTodos(updater)}
         authToken={token}
         authUrl={url}
         userName={user?.name}

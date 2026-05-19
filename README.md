@@ -36,8 +36,10 @@ Cola o teu API token do OpenProject (Profile → Access tokens) e entra. O calen
 | A Desenvolver | 0.8 | Quase total |
 | MR em DEV / MR em QA | 0.4 | Reduzido (revisao) |
 | Em Teste / QA | 0.3 | Reduzido (testing) |
+| Desenvolvido / Developed | 0.3 | Ainda recebe horas (touch-ups, QLD, bug-fixes) |
 | Novo / New | 0.2 | Toque ligeiro |
-| Desenvolvido / Closed / On Hold / Bloqueado / Rejeitado | 0.0 | Excluido |
+| On Hold / Bloqueado / Rejeitado | 0.1 | Horas reduzidas se houve trabalho |
+| Fechado / Closed | 0.0 | **Unico estado verdadeiramente terminal** |
 
 Todos os pesos sao ajustaveis no painel Definicoes → Pesos.
 

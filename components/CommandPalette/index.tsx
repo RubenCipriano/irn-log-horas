@@ -17,6 +17,9 @@ type Props = {
   processingDetail?: string;
   processingStartedAt?: number | null;
   anchorDate?: Date | null;
+  // Epoch ms of when the OpenProject task list was last fetched. Shown as a
+  // freshness chip so the user knows whether to expect newly assigned tasks.
+  lastTasksFetchedAt?: number;
 };
 
 const GITLAB_PROMPT = "Analisa a minha atividade no GitLab no intervalo dado (commits + MRs) e propoe horas. Para cada commit/MR: se mencionar #ID, associa diretamente; caso contrario, escolhe a tarefa mais provavel comparando o titulo do commit com os titulos das tarefas. Distribui as horas pelos dias em que houve atividade real, respeitando o limite diario do horario.";
@@ -36,7 +39,7 @@ export default function CommandPalette(props: Props) {
 
 function CommandPaletteInner({
   onClose, onSubmit, onCancel, isProcessing, defaultRange = "week", defaultText, hasAIConfigured, hasGitLabConfigured, onOpenSettings,
-  processingStage, processingDetail, processingStartedAt, anchorDate,
+  processingStage, processingDetail, processingStartedAt, anchorDate, lastTasksFetchedAt,
 }: Omit<Props, "open">) {
   const [elapsedMs, setElapsedMs] = useState(0);
   useEffect(() => {
@@ -86,6 +89,15 @@ function CommandPaletteInner({
           </svg>
           <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Assistente IA</h2>
           <span className="text-[10px] text-slate-500 dark:text-slate-400">Descreve o que fizeste e a IA distribui horas</span>
+          {lastTasksFetchedAt ? (
+            <span
+              className="text-[10px] text-slate-500 dark:text-slate-400 inline-flex items-center gap-1 rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5"
+              title={`Tarefas obtidas ${new Date(lastTasksFetchedAt).toLocaleTimeString("pt-PT")}`}
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              tarefas <FreshnessAge ts={lastTasksFetchedAt} />
+            </span>
+          ) : null}
           <button
             onClick={onClose}
             className="ml-auto rounded p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
@@ -327,4 +339,21 @@ function ProcessingPanel({
       </div>
     </div>
   );
+}
+
+// Live "Xs ago" chip — ticks once per second so the user can tell at a glance
+// whether the task list might be stale.
+function FreshnessAge({ ts }: { ts: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const ageMs = now - ts;
+  const ageSec = Math.max(0, Math.floor(ageMs / 1000));
+  if (ageSec < 5) return <>agora</>;
+  if (ageSec < 60) return <>ha {ageSec}s</>;
+  const ageMin = Math.floor(ageSec / 60);
+  if (ageMin < 60) return <>ha {ageMin}min</>;
+  return <>ha {Math.floor(ageMin / 60)}h</>;
 }

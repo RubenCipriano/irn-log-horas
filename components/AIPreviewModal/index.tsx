@@ -51,7 +51,10 @@ type Props = {
   rawResponse?: string;
   gitlabSummary?: GitLabSummary;
   unmatchedActivities?: UnmatchedActivity[];
+  gitlabActivities?: UnmatchedActivity[]; // all in-range activity the AI saw
   debug?: DebugInfo;
+  onRefine?: (feedback: string) => void;   // re-prompt with user feedback
+  originalDescription?: string;
 };
 
 function formatDay(dayKey: string): string {
@@ -62,13 +65,23 @@ function formatDay(dayKey: string): string {
   });
 }
 
-export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, isSaving, getExpectedHours, reasoning, warnings, rawResponse, gitlabSummary, unmatchedActivities, debug }: Props) {
+export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, isSaving, getExpectedHours, reasoning, warnings, rawResponse, gitlabSummary, unmatchedActivities, gitlabActivities, debug, onRefine, originalDescription }: Props) {
   const { addToast } = useToast();
   const [working, setWorking] = useState<AIDistributionItem[]>(items);
   const [showRaw, setShowRaw] = useState(false);
   const [showInspector, setShowInspector] = useState(false);
-  // Number of GitLab activities we know about but couldn't auto-place; shown as a count only.
+  const [showGitlabActivity, setShowGitlabActivity] = useState(false);
+  const [showRefine, setShowRefine] = useState(false);
+  const [refineText, setRefineText] = useState<string>("");
   const unmatchedCount = unmatchedActivities?.length ?? 0;
+  const totalActivitySeen = gitlabActivities?.length ?? 0;
+
+  const submitRefine = () => {
+    if (!refineText.trim() || !onRefine) return;
+    onRefine(refineText.trim());
+    setShowRefine(false);
+    setRefineText("");
+  };
 
   const grouped = useMemo(() => {
     const map = new Map<string, AIDistributionItem[]>();
@@ -94,9 +107,16 @@ export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, i
     return offenders;
   }, [grouped, getExpectedHours]);
 
-  const hasGitLabRows = working.some(it => it.source === "gitlab");
   const gitlabCount = working.filter(it => it.source === "gitlab").length;
   const aiCount = working.filter(it => it.source === "ai").length;
+
+  // Lift "Nao encontrei a tarefa #NNNN..." sentences out of the reasoning into a
+  // dedicated yellow banner so the user notices unresolved mentions at a glance.
+  const unmatchedMentions = useMemo<string[]>(() => {
+    if (!reasoning) return [];
+    const re = /Nao encontrei a tarefa[^.\n]*?(?:\.|$|\n)/gi;
+    return Array.from(reasoning.matchAll(re), m => m[0].trim().replace(/\.$/, ""));
+  }, [reasoning]);
 
   const updateHours = (idx: number, hours: number) => {
     setWorking(prev => prev.map((it, i) => i === idx ? { ...it, hours: Math.max(0, Math.round(hours * 2) / 2) } : it));
@@ -158,6 +178,29 @@ export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, i
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {/* Unmatched-mention banner — surfaces "Nao encontrei a tarefa #NNNN" lines */}
+          {unmatchedMentions.length > 0 && (
+            <div className="rounded-xl border border-amber-300 dark:border-amber-900/70 bg-amber-50 dark:bg-amber-950/40 p-3">
+              <div className="flex items-start gap-2">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">
+                  <path d="M8 1.5L1.5 13.5h13L8 1.5zM8 6v3M8 11.5h.01" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] uppercase font-semibold tracking-wide text-amber-700 dark:text-amber-300 mb-1">
+                    Tarefas mencionadas mas nao encontradas
+                  </p>
+                  <ul className="space-y-0.5">
+                    {unmatchedMentions.map((line, i) => (
+                      <li key={i} className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">
+                        {line}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* AI reasoning panel — always shown if present */}
           {reasoning && (
             <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50 dark:bg-indigo-950/30 p-3">
@@ -174,11 +217,21 @@ export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, i
           {/* GitLab summary — what was found in the range */}
           {gitlabSummary && (
             <div className="rounded-xl border border-orange-200 dark:border-orange-900/60 bg-orange-50 dark:bg-orange-950/30 p-3">
-              <div className="flex items-center gap-1.5 mb-1.5">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-orange-600 dark:text-orange-400">
-                  <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 0 1-.3-.94l1.22-3.78L4.69 2.6c.1-.32.41-.54.75-.54s.65.22.75.54l2.42 7.07h8.78l2.42-7.07c.1-.32.41-.54.75-.54s.65.22.75.54l2.42 7.07 1.22 3.78c.13.36-.04.74-.3.94" fill="currentColor" />
-                </svg>
-                <p className="text-[10px] uppercase font-semibold tracking-wide text-orange-700 dark:text-orange-300">Atividade GitLab</p>
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <div className="flex items-center gap-1.5">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-orange-600 dark:text-orange-400">
+                    <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 0 1-.3-.94l1.22-3.78L4.69 2.6c.1-.32.41-.54.75-.54s.65.22.75.54l2.42 7.07h8.78l2.42-7.07c.1-.32.41-.54.75-.54s.65.22.75.54l2.42 7.07 1.22 3.78c.13.36-.04.74-.3.94" fill="currentColor" />
+                  </svg>
+                  <p className="text-[10px] uppercase font-semibold tracking-wide text-orange-700 dark:text-orange-300">Atividade GitLab</p>
+                </div>
+                {totalActivitySeen > 0 && (
+                  <button
+                    onClick={() => setShowGitlabActivity(true)}
+                    className="text-[10px] font-semibold uppercase tracking-wide text-orange-700 dark:text-orange-300 underline decoration-dotted hover:no-underline"
+                  >
+                    Ver {totalActivitySeen} item(s)
+                  </button>
+                )}
               </div>
               <div className="flex flex-wrap gap-1.5 mb-2">
                 <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 dark:bg-orange-950/60 px-2 py-0.5 text-[11px] text-orange-800 dark:text-orange-200 font-medium">
@@ -334,6 +387,24 @@ export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, i
                                   IA
                                 </span>
                               )}
+                              {typeof it.confidence === "number" && (() => {
+                                const c = it.confidence;
+                                const label = c >= 0.8 ? "alta" : c >= 0.5 ? "media" : "baixa";
+                                const cls = c >= 0.8
+                                  ? "text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/40"
+                                  : c >= 0.5
+                                    ? "text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/40"
+                                    : "text-orange-700 dark:text-orange-300 bg-orange-100 dark:bg-orange-950/40";
+                                return (
+                                  <span
+                                    className={`inline-flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${cls}`}
+                                    title={`Confianca da IA: ${Math.round(c * 100)}%`}
+                                  >
+                                    <span className={`h-1.5 w-1.5 rounded-full ${c >= 0.8 ? "bg-emerald-500" : c >= 0.5 ? "bg-amber-500" : "bg-orange-500"}`} />
+                                    {label}
+                                  </span>
+                                );
+                              })()}
                             </div>
                             <div className="flex items-center gap-1.5 mt-0.5">
                               <span className="text-[10px] text-slate-500 dark:text-slate-400">#{it.taskId}</span>
@@ -393,6 +464,14 @@ export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, i
                   Inspecionar I/O
                 </button>
               )}
+              {onRefine && (
+                <button
+                  onClick={() => setShowRefine(v => !v)}
+                  className="text-[11px] text-amber-700 dark:text-amber-400 hover:underline font-medium"
+                >
+                  {showRefine ? "Esconder feedback" : "Refazer com feedback"}
+                </button>
+              )}
             </div>
             <div className="flex gap-2">
               <button
@@ -417,8 +496,108 @@ export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, i
           {showRaw && rawResponse && (
             <pre className="text-[10px] text-slate-600 dark:text-slate-400 whitespace-pre-wrap font-mono max-h-40 overflow-y-auto bg-white dark:bg-slate-900 rounded p-2 border border-slate-200 dark:border-slate-700">{rawResponse}</pre>
           )}
+          {showRefine && onRefine && (
+            <div className="rounded-lg border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/30 p-3 space-y-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                Refazer com feedback
+              </p>
+              {originalDescription && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-400/80">
+                  Pedido original: <em className="italic">{originalDescription.slice(0, 120)}{originalDescription.length > 120 ? "..." : ""}</em>
+                </p>
+              )}
+              <textarea
+                value={refineText}
+                onChange={e => setRefineText(e.target.value)}
+                placeholder="Ex: as horas no dia 19 estao trocadas; a tarefa X deveria ter mais horas; nao incluas commits de bump deps..."
+                className="w-full min-h-[80px] resize-none rounded-md border border-amber-200 dark:border-amber-900/60 bg-white dark:bg-slate-900 px-2 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:border-amber-500 focus:outline-none"
+                autoFocus
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => { setShowRefine(false); setRefineText(""); }}
+                  className="rounded-md border border-slate-200 dark:border-slate-700 px-3 py-1 text-[11px] font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={submitRefine}
+                  disabled={!refineText.trim() || isSaving}
+                  className="rounded-md bg-amber-500 hover:bg-amber-600 px-3 py-1 text-[11px] font-semibold text-white transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Submeter e refazer
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* GitLab activity overlay — full list of commits/MRs the AI saw */}
+      {showGitlabActivity && gitlabActivities && gitlabActivities.length > 0 && (
+        <div className="fixed inset-0 z-70 flex items-center justify-center bg-black/70 p-4 animate-fade-in" onClick={() => setShowGitlabActivity(false)}>
+          <div className="w-full max-w-2xl rounded-2xl bg-white dark:bg-slate-900 shadow-2xl border border-slate-200 dark:border-slate-700 max-h-[88vh] flex flex-col animate-slide-up" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-200 dark:border-slate-700">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                  Atividade GitLab no intervalo
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  {gitlabActivities.length} item(s) que a IA viu. Verifica se as recomendacoes batem certo.
+                </p>
+              </div>
+              <ModalCloseButton onClick={() => setShowGitlabActivity(false)} />
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-1.5">
+              {gitlabActivities.map((act, i) => {
+                const dayKey = act.createdAt.split("T")[0];
+                return (
+                  <div key={`${act.title}-${act.createdAt}-${i}`} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 p-2.5">
+                    <div className="flex items-start gap-2">
+                      <span className={`text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0 ${
+                        act.type === "merge_request"
+                          ? "text-purple-700 bg-purple-100 dark:text-purple-300 dark:bg-purple-950/40"
+                          : "text-blue-700 bg-blue-100 dark:text-blue-300 dark:bg-blue-950/40"
+                      }`}>
+                        {act.type === "merge_request" ? "MR" : "Commit"}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-slate-900 dark:text-slate-100 truncate">{act.title}</p>
+                        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-slate-500 dark:text-slate-400">
+                          <span>{formatDay(dayKey)}</span>
+                          <span>·</span>
+                          <span className="truncate">{act.project}</span>
+                          {act.refIds.length > 0 && (
+                            <>
+                              <span>·</span>
+                              <span className="text-emerald-700 dark:text-emerald-400 font-medium">
+                                {act.refIds.map(id => `#${id}`).join(", ")}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      {act.url && (
+                        <a href={act.url} target="_blank" rel="noopener noreferrer" className="shrink-0 text-[10px] text-indigo-600 dark:text-indigo-400 hover:underline">
+                          abrir
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
+              <button
+                onClick={() => setShowGitlabActivity(false)}
+                className="rounded-lg bg-indigo-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-indigo-600"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* I/O Inspector overlay */}
       {showInspector && debug && (

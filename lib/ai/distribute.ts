@@ -18,6 +18,7 @@ const RESPONSE_SCHEMA = {
           dayKey: { type: "string" },
           hours: { type: "number" },
           reason: { type: "string" },
+          confidence: { type: "number" },
         },
         required: ["taskId", "dayKey", "hours"],
       },
@@ -34,6 +35,7 @@ export type DistributeInput = {
   schedule: WorkSchedule;
   providerConfig: AIProviderConfig;
   gitlabActivity?: GitLabActivity[];
+  timeEntriesData?: Record<string, number>;
   meetings?: { taskId: string; taskTitle: string; hours: number };
   signal?: AbortSignal;
 };
@@ -72,6 +74,7 @@ function baselineFromGitLab(
         hours: defaultHours,
         reason: act.type === "merge_request" ? `MR: ${act.title.slice(0, 60)}` : `Commit: ${act.title.slice(0, 60)}`,
         source: "gitlab",
+        confidence: 0.85, // #ID match is strong evidence
       });
     }
     if (matched) {
@@ -93,6 +96,7 @@ function baselineFromGitLab(
           ? `MR (fuzzy): ${act.title.slice(0, 50)}`
           : `Commit (fuzzy): ${act.title.slice(0, 50)}`,
         source: "gitlab",
+        confidence: 0.55, // title-only match is weaker than #ID
       });
     } else {
       unmatched++;
@@ -189,7 +193,7 @@ export async function distributeWork(input: DistributeInput): Promise<Distribute
     ...matches.map(m => m.task),
     ...todoItems.filter(t => !matchedSet.has(t.id)),
   ];
-  // Cap at 60 to control prompt token cost — covers nearly all realistic sprints.
+
   const taskSubset = ranked.slice(0, 60);
 
   const taskIndex = new Map<string, { id: string; title: string }>();
@@ -204,7 +208,13 @@ export async function distributeWork(input: DistributeInput): Promise<Distribute
     description: input.description,
     from: input.dateRange.from,
     to: input.dateRange.to,
-    tasks: taskSubset.map(t => ({ id: t.id, title: t.title, status: t.status, timeline: t.timeline })),
+    tasks: taskSubset.map(t => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      timeline: t.timeline,
+      totalHours: input.timeEntriesData?.[t.id],
+    })),
     schedule: input.schedule,
     gitlabActivity: inRangeActivity,
     meetings: input.meetings ? { taskId: input.meetings.taskId, hours: input.meetings.hours } : undefined,
@@ -252,14 +262,16 @@ export async function distributeWork(input: DistributeInput): Promise<Distribute
       hours: it.hours,
       reason: it.reason,
       source: "ai" as const,
+      confidence: it.confidence,
     };
   });
 
   // Merge GitLab baseline + AI items, de-duplicating by (taskId, dayKey).
-  // GitLab baseline wins on collisions because it's grounded in real activity.
+  // AI output now wins on collisions so prompt-prioritized tasks take precedence
+  // over GitLab-derived baseline entries when both apply.
   const merged = new Map<string, AIDistributionItem>();
-  for (const it of aiItems) merged.set(`${it.taskId}|${it.dayKey}`, it);
   for (const it of gitlabBaseline) merged.set(`${it.taskId}|${it.dayKey}`, it);
+  for (const it of aiItems) merged.set(`${it.taskId}|${it.dayKey}`, it);
 
   // Inject the configured meetings task on every weekday in range that doesn't
   // already have it. Mirrors the QuickHoursForm behaviour for consistency.
@@ -274,6 +286,7 @@ export async function distributeWork(input: DistributeInput): Promise<Distribute
           hours: input.meetings.hours,
           reason: "Meetings (auto)",
           source: "manual",
+          confidence: 1.0, // user-configured, deterministic
         });
       }
     }

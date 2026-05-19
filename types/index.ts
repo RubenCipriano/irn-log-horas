@@ -19,7 +19,7 @@ export type TimelineInferenceConfig = {
 export const DEFAULT_TIMELINE_INFERENCE: TimelineInferenceConfig = {
   enabled: true,
   starterStates: ["novo", "new"],
-  terminalStates: ["desenvolvido", "developed", "fechado", "closed", "rejeitado", "rejected"],
+  terminalStates: ["fechado", "closed"],
   fillState: "Em Desenvolvimento",
 };
 
@@ -38,12 +38,24 @@ export type TodoItem = {
   date: Date | null;
   url?: string;
   status?: string;
+  statusId?: string;           // OpenProject status ID, needed for PATCH status changes
+  lockVersion?: number;        // optimistic-locking field required by OpenProject PATCH
   sprint?: string;
   updatedAt?: string;
   isClosed?: boolean;
   activeFrom?: string | null;   // "YYYY-MM-DD" — derived from timeline for back-compat
   activeUntil?: string | null;  // "YYYY-MM-DD" — derived from timeline for back-compat
   timeline?: TaskStatusTimeline; // full status history (optional for old callers)
+};
+
+// One entry per OpenProject status, fetched once via /api/v3/statuses on login.
+// Used to populate the status dropdown in TaskModal and the column list in Kanban.
+export type AvailableStatus = {
+  id: string;
+  name: string;
+  isClosed: boolean;
+  color?: string;   // hex string when provided by OpenProject
+  position?: number;
 };
 
 export type Holiday = {
@@ -129,6 +141,9 @@ export type AIDistributionItem = {
   hours: number;
   reason: string;
   source?: "ai" | "gitlab" | "history" | "manual";
+  // 0..1 — how confident the AI / orchestrator is about this entry.
+  // Optional: older responses / older items may not have it.
+  confidence?: number;
 };
 
 export type GitLabConfig = {

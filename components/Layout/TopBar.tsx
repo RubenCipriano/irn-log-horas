@@ -19,6 +19,8 @@ type Props = {
   isLoading?: boolean;
   theme: Theme;
   onCycleTheme: () => void;
+  view?: "calendar" | "kanban";
+  onSetView?: (view: "calendar" | "kanban") => void;
 };
 
 function IconBtn({
@@ -63,7 +65,7 @@ function ThemeIcon({ theme }: { theme: Theme }) {
 export default function TopBar({
   year, month, onPrev, onNext, onToday, onPalette, onSettings,
   onWeekFill, onMonthFill, onClearMonth, onReload, isReloading, isLoading,
-  theme, onCycleTheme,
+  theme, onCycleTheme, view = "calendar", onSetView,
 }: Props) {
   return (
     <header className="sticky top-0 z-30 backdrop-blur bg-[var(--surface-1)]/85 dark:bg-slate-900/85 border-b border-slate-200 dark:border-slate-700">
@@ -99,31 +101,63 @@ export default function TopBar({
 
         <div className="flex-1" />
 
-        {/* Quick actions */}
-        <button
-          onClick={onWeekFill}
-          disabled={isLoading}
-          title="Preencher semana (W)"
-          className="rounded-lg px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition disabled:opacity-40"
-        >
-          Semana
-        </button>
-        <button
-          onClick={onMonthFill}
-          disabled={isLoading}
-          title="Preencher mes (M)"
-          className="rounded-lg px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition disabled:opacity-40"
-        >
-          Mes
-        </button>
-        <button
-          onClick={onClearMonth}
-          disabled={isLoading}
-          title="Limpar horas"
-          className="rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950 transition disabled:opacity-40"
-        >
-          Limpar
-        </button>
+        {/* View toggle: Calendar / Kanban */}
+        {onSetView && (
+          <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 mr-1">
+            <button
+              onClick={() => onSetView("calendar")}
+              title="Vista de calendario"
+              className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition ${
+                view === "calendar"
+                  ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-sm"
+                  : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              }`}
+            >
+              Calendario
+            </button>
+            <button
+              onClick={() => onSetView("kanban")}
+              title="Vista de Kanban"
+              className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition ${
+                view === "kanban"
+                  ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-sm"
+                  : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+              }`}
+            >
+              Kanban
+            </button>
+          </div>
+        )}
+
+        {/* Quick actions — calendar-specific, hidden in Kanban view */}
+        {view !== "kanban" && (
+          <>
+            <button
+              onClick={onWeekFill}
+              disabled={isLoading}
+              title="Preencher semana (W)"
+              className="rounded-lg px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition disabled:opacity-40"
+            >
+              Semana
+            </button>
+            <button
+              onClick={onMonthFill}
+              disabled={isLoading}
+              title="Preencher mes (M)"
+              className="rounded-lg px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition disabled:opacity-40"
+            >
+              Mes
+            </button>
+            <button
+              onClick={onClearMonth}
+              disabled={isLoading}
+              title="Limpar horas"
+              className="rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950 transition disabled:opacity-40"
+            >
+              Limpar
+            </button>
+          </>
+        )}
 
         <span className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1" />
 

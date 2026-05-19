@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { TodoItem, Holiday, SelectedDay, Recommendation, TimeEntriesData, SprintInfo, TaskStatusTimeline, AIDistributionItem } from "@/types";
+import type { TodoItem, Holiday, SelectedDay, Recommendation, TimeEntriesData, SprintInfo, TaskStatusTimeline, AIDistributionItem, AvailableStatus } from "@/types";
 import { useWorkSchedule } from "@/hooks/useWorkSchedule";
 import { useTaskAssignments } from "@/hooks/useTaskAssignments";
 import { useStatusWeights } from "@/hooks/useStatusWeights";
+import { useKanbanColumns } from "@/hooks/useKanbanColumns";
 import { useAIProvider } from "@/hooks/useAIProvider";
 import { useGitLabConfig } from "@/hooks/useGitLabConfig";
 import { useTimelineInference } from "@/hooks/useTimelineInference";
@@ -12,7 +13,7 @@ import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useTheme } from "@/hooks/useTheme";
 import {
   formatHours, toKey, getHoursStatus, getDaysInMonth, getMonthStartOffset,
-  WEEKDAYS_PT, MONTHS_PT, IN_PROGRESS_STATUSES,
+  WEEKDAYS_PT, MONTHS_PT,
 } from "@/lib/calendar-utils";
 import { getPortugalHolidays } from "@/lib/holidays";
 import { getStatusWeightForDay } from "@/lib/status-timeline";
@@ -36,6 +37,8 @@ import AISettings from "@/components/AISettings";
 import AIPreviewModal from "@/components/AIPreviewModal";
 import GitLabSettings from "@/components/GitLabSettings";
 import TimelineInferenceSettings from "@/components/TimelineInferenceSettings";
+import KanbanColumnsSettings from "@/components/KanbanColumnsSettings";
+import KanbanBoard from "@/components/Kanban/Board";
 import ModalCloseButton from "@/components/ModalCloseButton";
 
 const EMPTY_TIME_ENTRIES: TimeEntriesData = { byDay: {}, byTask: {}, byDayTask: {} };
@@ -44,9 +47,11 @@ type CalendarProps = {
   todoList?: TodoItem[];
   timeEntries?: TimeEntriesData;
   sprints?: SprintInfo[];
+  availableStatuses?: AvailableStatus[];
   isLoading?: boolean;
   onMonthChange?: () => void;
   onTimeEntriesUpdate?: (updater: (prev: TimeEntriesData) => TimeEntriesData) => void;
+  onTodosUpdate?: (updater: (prev: TodoItem[]) => TodoItem[]) => void;
   authToken?: string | null;
   authUrl?: string;
   userName?: string;
@@ -55,8 +60,8 @@ type CalendarProps = {
 };
 
 export default function Calendar({
-  todoList = [], timeEntries = EMPTY_TIME_ENTRIES, sprints = [], isLoading = false,
-  onMonthChange, onTimeEntriesUpdate, authToken, authUrl,
+  todoList = [], timeEntries = EMPTY_TIME_ENTRIES, sprints = [], availableStatuses = [], isLoading = false,
+  onMonthChange, onTimeEntriesUpdate, onTodosUpdate, authToken, authUrl,
   userName, userEmail, onLogout,
 }: CalendarProps) {
   const today = new Date();
@@ -64,10 +69,28 @@ export default function Calendar({
   const { schedule, saveSchedule, resetSchedule, getExpectedHours } = useWorkSchedule();
   const { assignments, assignTask, unassignTask, getAssignmentsForDay } = useTaskAssignments();
   const { weights: statusWeights, overrides: weightOverrides, setWeight, resetWeight, reset: resetAllWeights } = useStatusWeights();
+  const { toggleVisible: toggleKanbanVisible, moveColumn: moveKanbanColumn, reset: resetKanbanColumns, sync: syncKanban, merge: mergeKanban } = useKanbanColumns();
+
+  // Keep the stored Kanban config in sync with the freshest availableStatuses
+  // (new statuses appear visible-by-default, removed ones disappear from the list).
+  useEffect(() => {
+    if (availableStatuses.length > 0) syncKanban(availableStatuses);
+  }, [availableStatuses, syncKanban]);
+  const kanbanColumns = useMemo(() => mergeKanban(availableStatuses), [mergeKanban, availableStatuses]);
   const { config: aiConfig, setConfig: setAiConfig, clear: clearAiConfig } = useAIProvider();
   const { config: gitlabConfig, setConfig: setGitlabConfig, clear: clearGitlabConfig } = useGitLabConfig();
   const { config: inferenceConfig, setConfig: setInferenceConfig, reset: resetInference } = useTimelineInference();
   const { theme, setTheme, cycle: cycleTheme } = useTheme();
+
+  const [view, setViewState] = useState<"calendar" | "kanban">(() => {
+    if (typeof window === "undefined") return "calendar";
+    const saved = localStorage.getItem("view_mode_v1");
+    return saved === "kanban" ? "kanban" : "calendar";
+  });
+  const setView = (v: "calendar" | "kanban") => {
+    setViewState(v);
+    try { localStorage.setItem("view_mode_v1", v); } catch { /* ignore */ }
+  };
 
   const [sidebarCollapsed, setSidebarCollapsedState] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
@@ -83,6 +106,27 @@ export default function Calendar({
   const [palettePrefill, setPalettePrefill] = useState<string>("");
   const [paletteRange, setPaletteRange] = useState<"day" | "week" | "month">("week");
   const [paletteAnchorDate, setPaletteAnchorDate] = useState<Date | null>(null);
+  // Tracks when the OpenProject task list was last fetched so we can auto-refresh
+  // before the user runs the IA. Initialised here so first-open-after-login refreshes.
+  const lastTasksFetchedAtRef = useRef<number>(0);
+  // Reactive timestamp surfaced in the palette so the user sees how fresh the data is.
+  const [lastTasksFetchedDisplay, setLastTasksFetchedDisplay] = useState<number>(0);
+
+  // Open the palette and, if the task list looks stale (>60s old), trigger a
+  // background refresh so the IA never works against out-of-date assignees.
+  const openPalette = (resetAnchor: boolean) => {
+    if (resetAnchor) {
+      setPaletteAnchorDate(null);
+      setPaletteRange("week");
+    }
+    const stale = Date.now() - lastTasksFetchedAtRef.current > 60_000;
+    if (stale && onMonthChange) {
+      onMonthChange();
+      lastTasksFetchedAtRef.current = Date.now();
+      setLastTasksFetchedDisplay(lastTasksFetchedAtRef.current);
+    }
+    setPaletteOpen(true);
+  };
   const paletteAbortRef = useRef<AbortController | null>(null);
   const [paletteStage, setPaletteStage] = useState<"idle" | "gitlab" | "ai" | "parse">("idle");
   const [paletteDetail, setPaletteDetail] = useState<string>("");
@@ -93,6 +137,9 @@ export default function Calendar({
   const [aiRawResponse, setAiRawResponse] = useState<string | undefined>(undefined);
   const [aiGitlabSummary, setAiGitlabSummary] = useState<{ commits: number; mrs: number; matchedById: number; matchedByFuzzy: number; unmatched: number } | undefined>(undefined);
   const [aiUnmatched, setAiUnmatched] = useState<Array<{ type: "commit" | "merge_request"; title: string; project: string; createdAt: string; refIds: string[]; url: string }> | undefined>(undefined);
+  const [aiGitlabActivities, setAiGitlabActivities] = useState<Array<{ type: "commit" | "merge_request"; title: string; project: string; createdAt: string; refIds: string[]; url: string }> | undefined>(undefined);
+  const [aiLastDescription, setAiLastDescription] = useState<string>("");
+  const [aiLastRange, setAiLastRange] = useState<"day" | "week" | "month">("week");
   const [aiDebug, setAiDebug] = useState<{ promptSystem: string; promptUser: string; dateRange: { from: string; to: string }; tasksSent: number; gitlabActivitySent: number } | undefined>(undefined);
 
   const [showTaskAssignment, setShowTaskAssignment] = useState(false);
@@ -117,6 +164,13 @@ export default function Calendar({
   const [meetingsTask, setMeetingsTask] = useState<TodoItem | null>(null);
   const [isSavingHours, setIsSavingHours] = useState(false);
   const [savingDays, setSavingDays] = useState<Set<string>>(new Set());
+
+  // Refresh the freshness timestamp whenever the task list is updated upstream
+  // (login, manual reload, palette-triggered auto-refresh, etc.).
+  useEffect(() => {
+    lastTasksFetchedAtRef.current = Date.now();
+    setLastTasksFetchedDisplay(lastTasksFetchedAtRef.current);
+  }, [todoList]);
   const [confirmationModal, setConfirmationModal] = useState<{
     date: Date;
     recommendations: Recommendation[];
@@ -438,8 +492,12 @@ export default function Calendar({
 
   const monthDevelopmentTasks = useMemo(() => {
     return todoList.filter(todo => {
-      if (!todo.status || !IN_PROGRESS_STATUSES.some(s => todo.status!.toLowerCase().includes(s.toLowerCase()))) return false;
+      // Phase 10 semantic: only "fechado"/"closed" is truly terminal.
+      // Everything else (MR para DEV, On hold, Bloqueado, Rejeitado, Desenvolvido, etc.)
+      // can still receive hours and must be visible to the AI / fill modals.
       if (todo.isClosed) return false;
+      const lower = (todo.status || "").toLowerCase();
+      if (lower.includes("fechado") || lower.includes("closed")) return false;
       if (activeSprint && todo.sprint) return todo.sprint === activeSprint;
       if (todo.updatedAt) {
         const updated = new Date(todo.updatedAt);
@@ -501,6 +559,9 @@ export default function Calendar({
     setPaletteStartedAt(Date.now());
     setPaletteStage("idle");
     setPaletteDetail("A preparar pedido...");
+    // Remember the original prompt + range so the user can refine later.
+    setAiLastDescription(description);
+    setAiLastRange(range);
     try {
       // Use anchor date when set (palette opened from a specific day), else fall back to today.
       const anchor = paletteAnchorDate || today;
@@ -547,6 +608,8 @@ export default function Calendar({
           if (gitlabResponse.ok) {
             const data = await gitlabResponse.json();
             gitlabActivity = data.activities || [];
+            // Keep the raw activity list so the preview modal can show it.
+            setAiGitlabActivities(Array.isArray(gitlabActivity) ? gitlabActivity as Array<{ type: "commit" | "merge_request"; title: string; project: string; createdAt: string; refIds: string[]; url: string }> : undefined);
             setPaletteDetail(`GitLab: ${Array.isArray(gitlabActivity) ? gitlabActivity.length : 0} item(s) recebidos.`);
           } else {
             const data = await gitlabResponse.json().catch(() => ({}));
@@ -577,6 +640,9 @@ export default function Calendar({
           schedule,
           providerConfig: aiConfig,
           gitlabActivity,
+          timeEntriesData: timeEntries?.byTask ? Object.fromEntries(
+            Object.entries(timeEntries.byTask).map(([taskId, history]) => [taskId, history.totalHours])
+          ) : undefined,
           meetings: meetingsHours > 0 && meetingsTaskId ? {
             taskId: meetingsTaskId,
             taskTitle: meetingsTask?.title || "Meetings",
@@ -645,7 +711,7 @@ export default function Calendar({
 
   // --- Keyboard shortcuts ---
   useKeyboardShortcuts({
-    onPalette: () => { setPaletteAnchorDate(null); setPaletteRange("week"); setPaletteOpen(true); },
+    onPalette: () => openPalette(true),
     onPrevMonth: goToPreviousMonth,
     onNextMonth: goToNextMonth,
     onToday: goToToday,
@@ -785,7 +851,7 @@ export default function Calendar({
           onPrev={goToPreviousMonth}
           onNext={goToNextMonth}
           onToday={goToToday}
-          onPalette={() => { setPaletteAnchorDate(null); setPaletteRange("week"); setPaletteOpen(true); }}
+          onPalette={() => openPalette(true)}
           onSettings={() => setSettingsOpen(true)}
           onWeekFill={() => setShowWeekFill(true)}
           onMonthFill={() => setShowMonthFill(true)}
@@ -795,6 +861,8 @@ export default function Calendar({
           isLoading={isLoading}
           theme={theme}
           onCycleTheme={cycleTheme}
+          view={view}
+          onSetView={setView}
         />
       }
       drawer={
@@ -820,19 +888,64 @@ export default function Calendar({
           gitlabConfig={gitlabConfig}
           gitlabSettingsSlot={<GitLabSettings config={gitlabConfig} onSave={setGitlabConfig} onClear={clearGitlabConfig} />}
           inferenceSettingsSlot={<TimelineInferenceSettings config={inferenceConfig} setConfig={setInferenceConfig} reset={resetInference} />}
+          kanbanSettingsSlot={
+            <KanbanColumnsSettings
+              availableStatuses={availableStatuses}
+              config={kanbanColumns}
+              toggleVisible={toggleKanbanVisible}
+              moveColumn={moveKanbanColumn}
+              reset={resetKanbanColumns}
+            />
+          }
           theme={theme}
           setTheme={setTheme}
         />
       }
     >
-      {calendarContent}
+      {view === "kanban" ? (
+        <KanbanBoard
+          tasks={monthDevelopmentTasks}
+          availableStatuses={availableStatuses}
+          columns={kanbanColumns}
+          weights={statusWeights}
+          authToken={authToken}
+          authUrl={authUrl}
+          onTaskClick={setSelectedTodo}
+          onToggleColumnVisible={toggleKanbanVisible}
+          onMoveColumn={moveKanbanColumn}
+          onStatusChanged={(taskId, result) => {
+            onTodosUpdate?.(prev => prev.map(t =>
+              t.id === taskId
+                ? { ...t, status: result.status, statusId: result.statusId, lockVersion: result.lockVersion }
+                : t
+            ));
+          }}
+        />
+      ) : (
+        calendarContent
+      )}
 
       {/* Task detail modal */}
       {selectedTodo && (
         <TaskModal
           todo={selectedTodo}
           statusWeights={statusWeights}
+          availableStatuses={availableStatuses}
+          authToken={authToken}
+          authUrl={authUrl}
           onClose={() => setSelectedTodo(null)}
+          onStatusChanged={(taskId, result) => {
+            // Patch the corresponding task in todoList in place so the calendar,
+            // sidebar, day modal, and Kanban view all reflect the new state
+            // without forcing a full month reload.
+            onTodosUpdate?.(prev => prev.map(t => {
+              if (t.id !== taskId) return t;
+              const next = { ...t, status: result.status, statusId: result.statusId, lockVersion: result.lockVersion };
+              // Reflect the change in the in-memory selectedTodo too, so the open modal updates.
+              setSelectedTodo(curr => curr && curr.id === taskId ? next : curr);
+              return next;
+            }));
+          }}
           onInferredClick={(taskTitle, seg) => {
             const fmt = (d: string) => new Date(d + "T00:00:00").toLocaleDateString("pt-PT", { day: "numeric", month: "short" });
             const to = seg.toDate ?? new Date().toISOString().slice(0, 10);
@@ -999,7 +1112,7 @@ export default function Calendar({
                     setPaletteRange("day");
                     setPalettePrefill("");
                     setSelectedDay(null);
-                    setPaletteOpen(true);
+                    openPalette(false); // keep the anchor/range we just set
                   }}
                   title={`Abrir assistente IA para ${dayKey}`}
                   className="flex items-center gap-1.5 rounded-lg border border-indigo-300 dark:border-indigo-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition"
@@ -1135,13 +1248,14 @@ export default function Calendar({
         processingDetail={paletteDetail}
         processingStartedAt={paletteStartedAt}
         anchorDate={paletteAnchorDate}
+        lastTasksFetchedAt={lastTasksFetchedDisplay || undefined}
       />
 
       {aiPreview && (
         <AIPreviewModal
           items={aiPreview}
           allTasks={todoList}
-          onCancel={() => { setAiPreview(null); setAiReasoning(undefined); setAiWarnings(undefined); setAiRawResponse(undefined); setAiGitlabSummary(undefined); setAiUnmatched(undefined); setAiDebug(undefined); }}
+          onCancel={() => { setAiPreview(null); setAiReasoning(undefined); setAiWarnings(undefined); setAiRawResponse(undefined); setAiGitlabSummary(undefined); setAiUnmatched(undefined); setAiDebug(undefined); setAiGitlabActivities(undefined); }}
           onConfirm={saveAIDistribution}
           isSaving={isSavingHours}
           getExpectedHours={getExpectedHours}
@@ -1150,7 +1264,23 @@ export default function Calendar({
           rawResponse={aiRawResponse}
           gitlabSummary={aiGitlabSummary}
           unmatchedActivities={aiUnmatched}
+          gitlabActivities={aiGitlabActivities}
           debug={aiDebug}
+          originalDescription={aiLastDescription}
+          onRefine={(feedback) => {
+            const combined = `${aiLastDescription}\n\nFEEDBACK PARA REVISAO: ${feedback}`;
+            // Close the preview AND open the palette with the combined prompt
+            // visible — the palette renders the progress steps panel while the
+            // call is in flight, so the user can see what's happening instead
+            // of staring at an empty calendar.
+            setAiPreview(null);
+            setPalettePrefill(combined);
+            setPaletteRange(aiLastRange);
+            setPaletteOpen(true);
+            // Defer to next microtask so the palette finishes mounting before
+            // handlePaletteSubmit starts mutating its progress state.
+            queueMicrotask(() => handlePaletteSubmit(combined, aiLastRange));
+          }}
         />
       )}
     </AppShell>

@@ -8,7 +8,7 @@ import ScheduleSettings from "@/components/ScheduleSettings";
 import StatusWeightSettings from "@/components/StatusWeightSettings";
 import ModalCloseButton from "@/components/ModalCloseButton";
 
-type TabKey = "appearance" | "schedule" | "weights" | "inference" | "ai" | "gitlab" | "meetings";
+type TabKey = "appearance" | "schedule" | "weights" | "inference" | "kanban" | "ai" | "gitlab" | "meetings";
 
 type Props = {
   open: boolean;
@@ -32,6 +32,7 @@ type Props = {
   gitlabConfig: GitLabConfig | null;
   gitlabSettingsSlot: ReactNode;
   inferenceSettingsSlot: ReactNode;
+  kanbanSettingsSlot: ReactNode;
   theme: Theme;
   setTheme: (t: Theme) => void;
 };
@@ -58,13 +59,14 @@ export default function SettingsDrawer({
   gitlabConfig,
   gitlabSettingsSlot,
   inferenceSettingsSlot,
+  kanbanSettingsSlot,
   theme,
   setTheme,
 }: Props) {
   const [tab, setTab] = useState<TabKey>(() => {
     if (typeof window === "undefined") return "appearance";
     const saved = localStorage.getItem("settings_last_tab_v1");
-    if (saved === "appearance" || saved === "schedule" || saved === "weights" || saved === "inference" || saved === "ai" || saved === "gitlab" || saved === "meetings") return saved;
+    if (saved === "appearance" || saved === "schedule" || saved === "weights" || saved === "inference" || saved === "kanban" || saved === "ai" || saved === "gitlab" || saved === "meetings") return saved;
     return "appearance";
   });
 
@@ -80,6 +82,7 @@ export default function SettingsDrawer({
     { key: "schedule", label: "Horario" },
     { key: "weights", label: "Pesos" },
     { key: "inference", label: "Inferencia" },
+    { key: "kanban", label: "Kanban" },
     { key: "ai", label: "IA", badge: aiConfig ? aiConfig.kind : undefined },
     { key: "gitlab", label: "GitLab", badge: gitlabConfig ? "on" : undefined },
     { key: "meetings", label: "Meetings" },
@@ -199,6 +202,10 @@ export default function SettingsDrawer({
 
           {tab === "inference" && (
             <div>{inferenceSettingsSlot}</div>
+          )}
+
+          {tab === "kanban" && (
+            <div>{kanbanSettingsSlot}</div>
           )}
 
           {tab === "ai" && (

@@ -3,6 +3,10 @@ import type { StatusSegment, StatusWeightConfig, TaskStatusTimeline, TimelineInf
 // Status weights drive both inclusion (score) and how much of the daily hour budget
 // a task gets on a given day. 1.0 = full hours, 0 = excluded.
 // Keys are lowercase status names (matched by substring against the actual status).
+//
+// IRN workflow note: only "fechado"/"closed" is truly terminal. "Desenvolvido"
+// means "OK in DEV" but the task may still need touch-ups, QLD round-trip, or
+// bug fixes — so it stays eligible for hours at a mid-low weight.
 export const DEFAULT_STATUS_WEIGHTS: StatusWeightConfig = {
   "em desenvolvimento": 1.0,
   "in development": 1.0,
@@ -16,17 +20,17 @@ export const DEFAULT_STATUS_WEIGHTS: StatusWeightConfig = {
   "em testes": 0.3,
   "em qa": 0.3,
   "testing": 0.3,
+  "desenvolvido": 0.3,
+  "developed": 0.3,
   "novo": 0.2,
   "new": 0.2,
-  "desenvolvido": 0.0,
-  "developed": 0.0,
+  "on hold": 0.1,
+  "onhold": 0.1,
+  "bloqueado": 0.1,
+  "rejeitado": 0.1,
+  "rejected": 0.1,
   "fechado": 0.0,
   "closed": 0.0,
-  "on hold": 0.0,
-  "onhold": 0.0,
-  "bloqueado": 0.0,
-  "rejeitado": 0.0,
-  "rejected": 0.0,
 };
 
 // Resolve the weight for a status string by checking substring matches against the config.
