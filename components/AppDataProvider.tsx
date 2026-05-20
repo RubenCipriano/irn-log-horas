@@ -1,8 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import Calendar from "@/components/Calendar";
 import type { TodoItem, TimeEntriesData, SprintInfo, AvailableStatus } from "@/types";
 import { readJSON } from "@/lib/storage/localStore";
 
@@ -11,10 +10,31 @@ const DEFAULT_URL = "https://projetos.irn.justica.gov.pt/";
 
 type StoredUser = { id?: number; name?: string; email?: string };
 
-function readInitialAuth(): { url: string; token: string | null; user: StoredUser | null } {
-  if (typeof window === "undefined") {
-    return { url: DEFAULT_URL, token: null, user: null };
-  }
+type AppData = {
+  token: string | null;
+  url: string;
+  user: StoredUser | null;
+  todos: TodoItem[];
+  timeEntries: TimeEntriesData;
+  sprints: SprintInfo[];
+  availableStatuses: AvailableStatus[];
+  isLoading: boolean;
+  refresh: () => void;
+  setTodos: (updater: (prev: TodoItem[]) => TodoItem[]) => void;
+  setTimeEntries: (updater: (prev: TimeEntriesData) => TimeEntriesData) => void;
+  logout: () => void;
+};
+
+const Ctx = createContext<AppData | null>(null);
+
+export function useAppData(): AppData {
+  const ctx = useContext(Ctx);
+  if (!ctx) throw new Error("useAppData must be used within <AppDataProvider>");
+  return ctx;
+}
+
+function readInitial(): { url: string; token: string | null; user: StoredUser | null } {
+  if (typeof window === "undefined") return { url: DEFAULT_URL, token: null, user: null };
   const token = localStorage.getItem("openproject_token");
   const url = localStorage.getItem("openproject_url") || DEFAULT_URL;
   let user: StoredUser | null = null;
@@ -25,22 +45,23 @@ function readInitialAuth(): { url: string; token: string | null; user: StoredUse
   return { url, token, user };
 }
 
-export default function Home() {
+// Holds auth + the loaded OpenProject data for the authenticated app shell.
+// Mounted by the (app) route-group layout so navigating between /
+// (calendar) and /kanban keeps the data — no refetch on view switch.
+export function AppDataProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const [url] = useState<string>(() => readInitialAuth().url);
-  const [token, setToken] = useState<string | null>(() => readInitialAuth().token);
-  const [user, setUser] = useState<StoredUser | null>(() => readInitialAuth().user);
-  const [isLoading, setIsLoading] = useState(false);
-  const [todos, setTodos] = useState<TodoItem[]>([]);
-  const [timeEntries, setTimeEntries] = useState<TimeEntriesData>(EMPTY_TIME_ENTRIES);
+  const [url] = useState<string>(() => readInitial().url);
+  const [token, setToken] = useState<string | null>(() => readInitial().token);
+  const [user, setUser] = useState<StoredUser | null>(() => readInitial().user);
+  const [todos, setTodosState] = useState<TodoItem[]>([]);
+  const [timeEntries, setTimeEntriesState] = useState<TimeEntriesData>(EMPTY_TIME_ENTRIES);
   const [sprints, setSprints] = useState<SprintInfo[]>([]);
   const [availableStatuses, setAvailableStatuses] = useState<AvailableStatus[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
 
   const fetchTodos = useCallback(async (authToken: string, authUrl: string) => {
     setIsLoading(true);
     try {
-      // Inference config lives in localStorage (owned by useTimelineInference);
-      // verify-token applies it server-side.
       const inferenceConfig = readJSON<unknown>("timeline_inference_v1", undefined);
       const response = await fetch("/api/openproject/verify-token", {
         method: "POST",
@@ -53,8 +74,8 @@ export default function Home() {
           ...todo,
           date: todo.date ? new Date(todo.date) : null,
         }));
-        setTodos(todosWithDates);
-        setTimeEntries(data.timeEntries || EMPTY_TIME_ENTRIES);
+        setTodosState(todosWithDates);
+        setTimeEntriesState(data.timeEntries || EMPTY_TIME_ENTRIES);
         setSprints(data.sprints || []);
         setAvailableStatuses(Array.isArray(data.availableStatuses) ? data.availableStatuses : []);
         if (data.user) setUser(data.user);
@@ -78,38 +99,36 @@ export default function Home() {
     fetchTodos(token, url);
   }, [token, url, router, fetchTodos]);
 
-  const handleLogout = () => {
+  const refresh = useCallback(() => {
+    if (token) fetchTodos(token, url);
+  }, [token, url, fetchTodos]);
+
+  const logout = useCallback(() => {
     localStorage.removeItem("openproject_token");
     localStorage.removeItem("openproject_url");
     localStorage.removeItem("openproject_user");
     setToken(null);
     setUser(null);
-    setTodos([]);
-    setTimeEntries(EMPTY_TIME_ENTRIES);
+    setTodosState([]);
+    setTimeEntriesState(EMPTY_TIME_ENTRIES);
     setSprints([]);
     router.replace("/setup");
+  }, [router]);
+
+  const value: AppData = {
+    token,
+    url,
+    user,
+    todos,
+    timeEntries,
+    sprints,
+    availableStatuses,
+    isLoading,
+    refresh,
+    setTodos: setTodosState,
+    setTimeEntries: setTimeEntriesState,
+    logout,
   };
 
-  if (!token) {
-    // Redirecting to /setup; render nothing to avoid a flash of the app shell.
-    return null;
-  }
-
-  return (
-    <Calendar
-      todoList={todos}
-      timeEntries={timeEntries}
-      sprints={sprints}
-      availableStatuses={availableStatuses}
-      isLoading={isLoading}
-      onMonthChange={() => fetchTodos(token, url)}
-      onTimeEntriesUpdate={(updater) => setTimeEntries(updater)}
-      onTodosUpdate={(updater) => setTodos(updater)}
-      authToken={token}
-      authUrl={url}
-      userName={user?.name}
-      userEmail={user?.email}
-      onLogout={handleLogout}
-    />
-  );
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

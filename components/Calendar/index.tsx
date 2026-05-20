@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { TodoItem, Holiday, SelectedDay, Recommendation, TimeEntriesData, SprintInfo, TaskStatusTimeline, AIDistributionItem, AIUpdateStatusAction, AvailableStatus } from "@/types";
 import { useWorkSchedule } from "@/hooks/useWorkSchedule";
 import { useTaskAssignments } from "@/hooks/useTaskAssignments";
@@ -17,14 +18,13 @@ import { useTimelineInference } from "@/hooks/useTimelineInference";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useTheme } from "@/hooks/useTheme";
 import {
-  formatHours, toKey, getHoursStatus, getDaysInMonth, getMonthStartOffset,
-  WEEKDAYS_PT, MONTHS_PT,
+  formatHours, toKey, getDaysInMonth, getMonthStartOffset,
 } from "@/lib/calendar-utils";
 import { getPortugalHolidays } from "@/lib/holidays";
 import { getStatusWeightForDay } from "@/lib/status-timeline";
 import { useToast } from "@/components/Toast";
 import TaskAssignmentModal from "@/components/TaskAssignmentModal";
-import DayCell from "./DayCell";
+import MonthGrid from "./MonthGrid";
 import TaskModal from "./TaskModal";
 import ConfirmationModal from "./ConfirmationModal";
 import ClearHoursModal from "./ClearHoursModal";
@@ -60,14 +60,16 @@ type CalendarProps = {
   userName?: string;
   userEmail?: string;
   onLogout?: () => void;
+  initialView?: "calendar" | "kanban";
 };
 
 export default function Calendar({
   todoList = [], timeEntries = EMPTY_TIME_ENTRIES, sprints = [], availableStatuses = [], isLoading = false,
   onMonthChange, onTimeEntriesUpdate, onTodosUpdate, authToken, authUrl,
-  userName, userEmail, onLogout,
+  userName, userEmail, onLogout, initialView = "calendar",
 }: CalendarProps) {
   const today = new Date();
+  const router = useRouter();
   const { addToast } = useToast();
   const { schedule, saveSchedule, resetSchedule, getExpectedHours } = useWorkSchedule();
   const { assignments, assignTask, unassignTask, getAssignmentsForDay } = useTaskAssignments();
@@ -87,6 +89,8 @@ export default function Calendar({
   const [showDayGitLab, setShowDayGitLab] = useState(false);
   // Manual per-task hours the user enters in the day modal (taskId -> hours).
   const [dayManualHours, setDayManualHours] = useState<Record<string, number>>({});
+  // In-progress edits to already-registered hours (taskId -> string value).
+  const [loggedEdits, setLoggedEdits] = useState<Record<string, string>>({});
   const safetyMode = useAISafetyMode();
   const auditLog = useAuditLog();
   // Phase 12 — safety mode "understand-first" overlay. Holds the interpretation
@@ -95,14 +99,15 @@ export default function Calendar({
   const { config: inferenceConfig, setConfig: setInferenceConfig, reset: resetInference } = useTimelineInference();
   const { theme, setTheme, cycle: cycleTheme } = useTheme();
 
-  const [view, setViewState] = useState<"calendar" | "kanban">(() => {
-    if (typeof window === "undefined") return "calendar";
-    const saved = localStorage.getItem("view_mode_v1");
-    return saved === "kanban" ? "kanban" : "calendar";
-  });
+  // The view is route-driven: / = calendar, /kanban = kanban. `initialView`
+  // seeds it from the page; toggling navigates between the two routes (the
+  // shared (app) layout keeps the data, so there's no refetch).
+  const [view, setViewState] = useState<"calendar" | "kanban">(initialView);
   const setView = (v: "calendar" | "kanban") => {
-    setViewState(v);
+    if (v === view) return;
+    setViewState(v); // instant feedback before navigation completes
     try { localStorage.setItem("view_mode_v1", v); } catch { /* ignore */ }
+    router.push(v === "kanban" ? "/kanban" : "/");
   };
 
   const [sidebarCollapsed, setSidebarCollapsedState] = useState<boolean>(() => {
@@ -278,6 +283,81 @@ export default function Calendar({
       delete newByDayTask[dayKey];
       return { ...prev, byDay: newByDay, byDayTask: newByDayTask };
     });
+  }
+
+  // Set (or remove, when newHours <= 0) the logged hours for a single task on a
+  // day, adjusting the day total accordingly. Used by the inline edit/remove of
+  // already-registered hours in the day modal.
+  function optimisticSetTaskHours(dayKey: string, taskId: string, newHours: number) {
+    onTimeEntriesUpdate?.(prev => {
+      const old = prev.byDayTask[dayKey]?.[taskId] || 0;
+      const delta = newHours - old;
+      const newByDay = { ...prev.byDay, [dayKey]: Math.max(0, (prev.byDay[dayKey] || 0) + delta) };
+      if (newByDay[dayKey] <= 0) delete newByDay[dayKey];
+      const newByDayTask = { ...prev.byDayTask, [dayKey]: { ...prev.byDayTask[dayKey] } };
+      if (newHours <= 0) delete newByDayTask[dayKey][taskId];
+      else newByDayTask[dayKey][taskId] = newHours;
+      if (Object.keys(newByDayTask[dayKey]).length === 0) delete newByDayTask[dayKey];
+      return { ...prev, byDay: newByDay, byDayTask: newByDayTask };
+    });
+  }
+
+  // Delete a single task's logged hours for a day (scoped clear).
+  async function clearTaskHours(dateToEdit: Date, taskId: string) {
+    if (!authToken || !authUrl) return false;
+    const dayKey = toKey(dateToEdit);
+    const response = await fetch("/api/openproject/clear-time-entries", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${authToken}`, "X-OpenProject-URL": authUrl },
+      body: JSON.stringify({ date: dayKey, taskId }),
+    });
+    return response.ok;
+  }
+
+  async function removeLoggedTask(dateToEdit: Date, taskId: string) {
+    setIsSavingHours(true);
+    try {
+      const ok = await clearTaskHours(dateToEdit, taskId);
+      if (ok) {
+        optimisticSetTaskHours(toKey(dateToEdit), taskId, 0);
+        addToast("Horas removidas.", "success");
+      } else {
+        addToast("Falha ao remover horas.", "error");
+      }
+    } catch {
+      addToast("Erro de rede ao remover horas.", "error");
+    } finally {
+      setIsSavingHours(false);
+    }
+  }
+
+  // Replace a task's logged hours for a day: clear its entries, then add the
+  // new amount (OpenProject has no in-place edit, so it's delete + re-create).
+  async function editLoggedTask(dateToEdit: Date, taskId: string, taskTitle: string, newHours: number) {
+    if (!authToken || !authUrl) return;
+    if (newHours <= 0) { await removeLoggedTask(dateToEdit, taskId); return; }
+    const dayKey = toKey(dateToEdit);
+    setIsSavingHours(true);
+    try {
+      const cleared = await clearTaskHours(dateToEdit, taskId);
+      if (!cleared) { addToast("Falha ao atualizar horas.", "error"); return; }
+      const response = await fetch("/api/openproject/add-time-entries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${authToken}`, "X-OpenProject-URL": authUrl },
+        body: JSON.stringify({ date: dayKey, entries: [{ workPackageId: taskId, spentTime: newHours }] }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.saved > 0) {
+        optimisticSetTaskHours(dayKey, taskId, newHours);
+        addToast(`Horas de "${taskTitle}" atualizadas para ${formatHours(newHours)}h.`, "success");
+      } else {
+        addToast("Falha ao atualizar horas.", "error");
+      }
+    } catch {
+      addToast("Erro de rede ao atualizar horas.", "error");
+    } finally {
+      setIsSavingHours(false);
+    }
   }
 
   // --- API Actions ---
@@ -929,91 +1009,36 @@ export default function Calendar({
   });
 
   const calendarContent = (
-    <div className="p-4 md:p-6">
-      {/* Sprint info chip */}
-      {activeSprintInfo?.startDate && activeSprintInfo?.endDate && (
-        <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-indigo-50 dark:bg-indigo-950 px-3 py-1 text-xs text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
-          <span className="font-medium">{activeSprint}</span>
-          <span className="text-indigo-400 dark:text-indigo-500">·</span>
-          <span>
-            {new Date(activeSprintInfo.startDate + "T00:00:00").toLocaleDateString("pt-PT", { day: "numeric", month: "short" })}
-            {" — "}
-            {new Date(activeSprintInfo.endDate + "T00:00:00").toLocaleDateString("pt-PT", { day: "numeric", month: "short" })}
-          </span>
-          <span className="text-indigo-400 dark:text-indigo-500">·</span>
-          <span>{monthDevelopmentTasks.length} tarefas</span>
-        </div>
-      )}
-
-      {/* Weekday headers */}
-      <div className="grid grid-cols-7 gap-2 text-center text-[10px] font-semibold uppercase text-slate-500 dark:text-slate-400 mb-2">
-        {WEEKDAYS_PT.map((day) => <div key={day}>{day}</div>)}
-      </div>
-
-      {/* Calendar grid */}
-      <div className="grid grid-cols-7 gap-2">
-        {isLoading ? (
-          Array.from({ length: 35 }).map((_, i) => (
-            <div key={`skeleton-${i}`} className="flex min-h-22 flex-col rounded-xl border border-slate-200 bg-slate-100 p-2 dark:border-slate-700 dark:bg-slate-800 animate-pulse-soft">
-              <div className="h-3 w-5 rounded bg-slate-300 dark:bg-slate-700" />
-              <div className="mt-2 h-2 w-10 rounded bg-slate-300 dark:bg-slate-700" />
-            </div>
-          ))
-        ) : (
-          Array.from({ length: totalCells }).map((_, index) => {
-            const dayNumber = index - startOffset + 1;
-            const isCurrentMonth = dayNumber > 0 && dayNumber <= daysInMonth;
-            const date = new Date(currentYear, currentMonth, dayNumber);
-            const key = toKey(date);
-            const holiday = isCurrentMonth ? holidayMap.get(key) : undefined;
-            const dayTodos = isCurrentMonth ? todoMap.get(key) || [] : [];
-            const isToday = isCurrentMonth && dayNumber === today.getDate() && currentMonth === today.getMonth() && currentYear === today.getFullYear();
-            const dow = date.getDay();
-            const isWeekend = dow === 0 || dow === 6;
-            const expectedHours = isCurrentMonth && !holiday ? getExpectedHours(date) : null;
-            const actualHours = isCurrentMonth ? timeEntries.byDay[key] : undefined;
-            const hoursStatus = isCurrentMonth && !holiday ? getHoursStatus(actualHours, expectedHours) : null;
-
-            return (
-              <DayCell
-                key={`${currentYear}-${currentMonth}-${index}`}
-                dayNumber={dayNumber}
-                isCurrentMonth={isCurrentMonth}
-                isToday={isToday}
-                isWeekend={isWeekend}
-                holiday={holiday}
-                todos={dayTodos}
-                hoursStatus={hoursStatus}
-                hasHours={!!actualHours && actualHours > 0}
-                isInSprint={isCurrentMonth && sprintDayKeys.has(key)}
-                isSaving={savingDays.has(key)}
-                dayKey={key}
-                timelines={timelines}
-                statusWeights={statusWeights}
-                onClick={() => {
-                  if (isCurrentMonth) { setSelectedDay({ date, todos: dayTodos, holiday, actualHours, expectedHours }); setShowDayGitLab(false); dayGitLab.clear(); setDayManualHours({}); }
-                }}
-                onTodoClick={setSelectedTodo}
-                onClearDay={() => setClearHoursModal(date)}
-              />
-            );
-          })
-        )}
-      </div>
-
-      {/* Holidays list */}
-      <div className="mt-6 rounded-xl border border-slate-200 bg-[var(--surface-1)] p-4 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-        <p className="text-[10px] font-semibold uppercase text-slate-500 dark:text-slate-400 mb-2">Feriados nacionais (Portugal)</p>
-        <ul className="grid gap-1 sm:grid-cols-2 lg:grid-cols-3">
-          {holidays.sort((a, b) => a.date.getTime() - b.date.getTime()).map((holiday) => (
-            <li key={holiday.name} className="flex items-center gap-2 text-xs">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-              <span>{holiday.name} — {holiday.date.getDate()} {MONTHS_PT[holiday.date.getMonth()]}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </div>
+    <MonthGrid
+      isLoading={isLoading}
+      currentYear={currentYear}
+      currentMonth={currentMonth}
+      totalCells={totalCells}
+      startOffset={startOffset}
+      daysInMonth={daysInMonth}
+      today={today}
+      holidayMap={holidayMap}
+      todoMap={todoMap}
+      sprintDayKeys={sprintDayKeys}
+      savingDays={savingDays}
+      timelines={timelines}
+      statusWeights={statusWeights}
+      timeEntries={timeEntries}
+      holidays={holidays}
+      activeSprint={activeSprint}
+      activeSprintInfo={activeSprintInfo}
+      taskCount={monthDevelopmentTasks.length}
+      getExpectedHours={getExpectedHours}
+      onSelectDay={({ date, todos, holiday, actualHours, expectedHours }) => {
+        setSelectedDay({ date, todos, holiday, actualHours, expectedHours });
+        setShowDayGitLab(false);
+        dayGitLab.clear();
+        setDayManualHours({});
+        setLoggedEdits({});
+      }}
+      onTodoClick={setSelectedTodo}
+      onClearDay={(date) => setClearHoursModal(date)}
+    />
   );
 
   return (
@@ -1348,17 +1373,54 @@ export default function Calendar({
                 )}
               </div>
 
-              {/* Horas registadas */}
+              {/* Horas registadas — editaveis / removiveis */}
               {byDayTaskEntries.length > 0 && (
                 <div>
                   <p className="text-[10px] uppercase font-semibold tracking-wide text-slate-500 dark:text-slate-400 mb-2">Horas registadas</p>
                   <div className="space-y-1">
                     {byDayTaskEntries.map(([taskId, hours]) => {
                       const task = todoList.find(t => t.id === taskId);
+                      const title = task?.title || `Task #${taskId}`;
+                      const editValue = loggedEdits[taskId] ?? String(hours);
+                      const parsed = parseFloat(editValue);
+                      const changed = Number.isFinite(parsed) && parsed !== hours;
                       return (
-                        <div key={taskId} className="flex items-center justify-between rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-900/60 p-2 text-xs">
-                          <span className="text-emerald-900 dark:text-emerald-200 truncate flex-1 mr-2">{task?.title || `Task #${taskId}`}</span>
-                          <span className="font-mono font-semibold text-emerald-700 dark:text-emerald-300 shrink-0">{formatHours(hours)}h</span>
+                        <div key={taskId} className="flex items-center gap-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-900/60 p-2 text-xs">
+                          <span className="text-emerald-900 dark:text-emerald-200 truncate flex-1">{title}</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={12}
+                            step={0.5}
+                            value={editValue}
+                            disabled={isSavingHours}
+                            onChange={(e) => setLoggedEdits(prev => ({ ...prev, [taskId]: e.target.value }))}
+                            className="w-14 rounded-md border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-slate-900 px-1.5 py-1 text-center font-mono font-semibold text-emerald-700 dark:text-emerald-300 focus:border-emerald-500 focus:outline-none"
+                            title="Editar horas"
+                          />
+                          <span className="text-[10px] text-emerald-700/70 dark:text-emerald-300/70">h</span>
+                          {changed && (
+                            <button
+                              onClick={() => editLoggedTask(selectedDay.date, taskId, title, Math.max(0, parsed))}
+                              disabled={isSavingHours}
+                              title="Guardar alteracao"
+                              className="rounded p-1 text-emerald-600 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition disabled:opacity-50"
+                            >
+                              <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                                <path d="M3 8.5l3.5 3.5L13 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            </button>
+                          )}
+                          <button
+                            onClick={() => removeLoggedTask(selectedDay.date, taskId)}
+                            disabled={isSavingHours}
+                            title="Remover horas desta tarefa"
+                            className="rounded p-1 text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition disabled:opacity-50"
+                          >
+                            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                              <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                            </svg>
+                          </button>
                         </div>
                       );
                     })}

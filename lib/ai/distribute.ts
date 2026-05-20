@@ -381,13 +381,18 @@ export async function distributeWork(input: DistributeInput): Promise<Distribute
     a.dayKey === b.dayKey ? a.taskTitle.localeCompare(b.taskTitle) : a.dayKey.localeCompare(b.dayKey)
   );
 
+  // The meetings placeholder is a fixed reservation — it must never be scaled
+  // up or down by the clamp/fill passes.
+  const meetingsTaskId = input.meetings?.taskId;
+
   // Hard cap per-day totals to the user's expected hours (Mon-Thu vs Friday in their schedule).
-  items = clampDailyTotals(items, input.schedule, warnings);
+  items = clampDailyTotals(items, input.schedule, warnings, meetingsTaskId);
 
   // Fill each active day UP to the expected hours so the user doesn't end up
-  // with a partial day. Only touches days that already have proposed hours —
-  // never invents entries on empty days.
-  items = fillDailyTotals(items, input.schedule, warnings);
+  // with a partial day. Only touches days that have a REAL (non-meetings) task
+  // — a day with only the meetings placeholder is left as-is (we never inflate
+  // meetings or invent work where there's no matched task).
+  items = fillDailyTotals(items, input.schedule, warnings, meetingsTaskId);
 
   if (items.length === 0 && aiStatusActions.length === 0 && top) {
     warnings.push(`Sugestao baseada apenas em correspondencia textual: ${top.task.title}`);
@@ -467,9 +472,19 @@ function expectedHoursFor(dayKey: string, schedule: WorkSchedule): number {
   return expectedHoursForDayKey(dayKey, schedule);
 }
 
-// Scale down each day's items so the sum never exceeds the user's expected hours for that day.
-// Preserves relative proportions and snaps to 0.5h increments.
-function clampDailyTotals(items: AIDistributionItem[], schedule: WorkSchedule, warnings: string[]): AIDistributionItem[] {
+// Split a day's items into the fixed meetings placeholder vs the scalable real
+// tasks. Meetings are never resized by clamp/fill.
+function splitMeetings(dayItems: AIDistributionItem[], meetingsTaskId?: string): { meetings: AIDistributionItem[]; scalable: AIDistributionItem[] } {
+  if (!meetingsTaskId) return { meetings: [], scalable: dayItems };
+  const meetings = dayItems.filter(i => i.taskId === meetingsTaskId);
+  const scalable = dayItems.filter(i => i.taskId !== meetingsTaskId);
+  return { meetings, scalable };
+}
+
+// Scale down each day's REAL tasks so the day total never exceeds the expected
+// hours. The meetings placeholder is held fixed and its hours are reserved out
+// of the budget. Snaps to 0.5h.
+function clampDailyTotals(items: AIDistributionItem[], schedule: WorkSchedule, warnings: string[], meetingsTaskId?: string): AIDistributionItem[] {
   const byDay = new Map<string, AIDistributionItem[]>();
   for (const it of items) {
     if (!byDay.has(it.dayKey)) byDay.set(it.dayKey, []);
@@ -482,37 +497,38 @@ function clampDailyTotals(items: AIDistributionItem[], schedule: WorkSchedule, w
       warnings.push(`${dayKey} e fim-de-semana — entradas descartadas.`);
       continue; // weekends: drop everything
     }
-    const total = dayItems.reduce((s, it) => s + it.hours, 0);
-    if (total <= expected) {
+    const { meetings, scalable } = splitMeetings(dayItems, meetingsTaskId);
+    const meetingsHours = meetings.reduce((s, it) => s + it.hours, 0);
+    const budget = Math.max(0.5, expected - meetingsHours); // hours available for real tasks
+    const total = scalable.reduce((s, it) => s + it.hours, 0);
+    if (total <= budget) {
       out.push(...dayItems);
       continue;
     }
-    // Scale all items down proportionally to fit `expected`.
-    const scale = expected / total;
-    const scaled = dayItems.map(it => ({
+    const scale = budget / total;
+    const scaled = scalable.map(it => ({
       ...it,
       hours: Math.max(0.5, Math.round(it.hours * scale * 2) / 2),
     }));
-    // Trim 0.5h at a time from largest until <= expected (rounding can overshoot).
     let runningTotal = scaled.reduce((s, it) => s + it.hours, 0);
-    while (runningTotal > expected) {
+    while (runningTotal > budget) {
       const idx = scaled.reduce((maxIdx, it, i) => it.hours > scaled[maxIdx].hours ? i : maxIdx, 0);
       if (scaled[idx].hours <= 0.5) break;
       scaled[idx].hours -= 0.5;
       runningTotal = scaled.reduce((s, it) => s + it.hours, 0);
     }
-    warnings.push(`${dayKey}: proposta original ${total.toFixed(1)}h excedia o esperado (${expected}h) — escalado.`);
-    out.push(...scaled);
+    warnings.push(`${dayKey}: proposta original ${total.toFixed(1)}h excedia o disponivel (${budget}h) — escalado.`);
+    out.push(...meetings, ...scaled);
   }
   return out;
 }
 
-// Scale UP each active day's items so the sum reaches the expected hours.
-// Only days that already have at least one entry are touched — empty days are
-// left empty (we never invent hours where there's no evidence). Distributes
-// the gap proportionally and snaps to 0.5h, putting any rounding remainder on
-// the largest item.
-function fillDailyTotals(items: AIDistributionItem[], schedule: WorkSchedule, warnings: string[]): AIDistributionItem[] {
+// Scale UP a day's REAL tasks so the day reaches the expected hours. Only days
+// that have at least one real (non-meetings) task are filled — a day with only
+// the meetings placeholder is left untouched (we never inflate meetings or
+// invent work where there's no matched task). Meetings hours stay fixed and are
+// reserved out of the target. Snaps to 0.5h.
+function fillDailyTotals(items: AIDistributionItem[], schedule: WorkSchedule, warnings: string[], meetingsTaskId?: string): AIDistributionItem[] {
   const byDay = new Map<string, AIDistributionItem[]>();
   for (const it of items) {
     if (!byDay.has(it.dayKey)) byDay.set(it.dayKey, []);
@@ -521,29 +537,30 @@ function fillDailyTotals(items: AIDistributionItem[], schedule: WorkSchedule, wa
   const out: AIDistributionItem[] = [];
   for (const [dayKey, dayItems] of byDay) {
     const expected = expectedHoursFor(dayKey, schedule);
-    const total = dayItems.reduce((s, it) => s + it.hours, 0);
-    if (expected === 0 || total >= expected || dayItems.length === 0) {
+    const { meetings, scalable } = splitMeetings(dayItems, meetingsTaskId);
+    const meetingsHours = meetings.reduce((s, it) => s + it.hours, 0);
+    const target = Math.max(0, expected - meetingsHours); // real-task hours target
+    const total = scalable.reduce((s, it) => s + it.hours, 0);
+    // Don't fill weekends, already-full days, or days with no real task.
+    if (expected === 0 || scalable.length === 0 || total >= target) {
       out.push(...dayItems);
       continue;
     }
-    // Scale up proportionally to reach `expected`.
-    const scale = expected / total;
-    const scaled = dayItems.map(it => ({
+    const scale = target / total;
+    const scaled = scalable.map(it => ({
       ...it,
       hours: Math.max(0.5, Math.round(it.hours * scale * 2) / 2),
     }));
-    // Add 0.5h at a time to the largest item until we hit the target (rounding
-    // can undershoot).
     let runningTotal = scaled.reduce((s, it) => s + it.hours, 0);
     let guard = 0;
-    while (runningTotal < expected && guard < 100) {
+    while (runningTotal < target && guard < 100) {
       const idx = scaled.reduce((maxIdx, it, i) => it.hours > scaled[maxIdx].hours ? i : maxIdx, 0);
       scaled[idx].hours += 0.5;
       runningTotal = scaled.reduce((s, it) => s + it.hours, 0);
       guard++;
     }
-    warnings.push(`${dayKey}: proposta original ${total.toFixed(1)}h preenchida ate ao esperado (${expected}h).`);
-    out.push(...scaled);
+    warnings.push(`${dayKey}: proposta de tarefas (${total.toFixed(1)}h) preenchida ate ${target}h (+ ${meetingsHours}h meetings).`);
+    out.push(...meetings, ...scaled);
   }
   return out;
 }

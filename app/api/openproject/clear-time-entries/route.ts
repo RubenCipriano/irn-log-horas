@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { assertValidExternalUrl, InvalidExternalUrlError } from "@/lib/security/url-validation";
+import { assertNumericId, InvalidIdError } from "@/lib/security/validate";
 import { genericUpstreamError } from "@/lib/security/safe-error";
 import type { OpTimeEntry } from "@/lib/openproject/api-types";
 
@@ -13,6 +14,19 @@ export async function POST(request: NextRequest) {
         { error: "Missing date parameter" },
         { status: 400 }
       );
+    }
+
+    // Optional: scope deletion to a single work package on that day.
+    let scopeTaskId: string | undefined;
+    if (body.taskId !== undefined && body.taskId !== null && body.taskId !== "") {
+      try {
+        scopeTaskId = assertNumericId(body.taskId, "taskId");
+      } catch (e) {
+        if (e instanceof InvalidIdError) {
+          return NextResponse.json({ error: e.message }, { status: 400 });
+        }
+        throw e;
+      }
     }
 
     const token = request.headers.get("Authorization")?.replace("Bearer ", "");
@@ -98,12 +112,17 @@ export async function POST(request: NextRequest) {
       page++;
     }
 
-    if (entries.length === 0) {
+    // When scoped to a task, keep only that work package's entries.
+    const targetEntries = scopeTaskId
+      ? entries.filter(e => (e._links?.workPackage?.href || "").split("/").pop() === scopeTaskId)
+      : entries;
+
+    if (targetEntries.length === 0) {
       return NextResponse.json({
         success: true,
         deleted: 0,
         total: 0,
-        message: "No time entries found for this date",
+        message: "No time entries found",
       });
     }
 
@@ -112,7 +131,7 @@ export async function POST(request: NextRequest) {
     const errors: string[] = [];
 
     // Delete each time entry
-    for (const entry of entries) {
+    for (const entry of targetEntries) {
       try {
         const entryId = entry.id;
 
@@ -140,7 +159,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       deleted: deletedCount,
-      total: entries.length,
+      total: targetEntries.length,
       permissionErrors,
       errors: errors.length > 0 ? errors : undefined,
     });

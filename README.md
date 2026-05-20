@@ -212,7 +212,12 @@ plans/                              # Planos historicos + activity-aware redesig
 - Novo `hooks/useDayGitLabActivity.ts` (fetch lazy + cache por dia) e `components/GitLabActivityList.tsx` (lista partilhada de commits/MRs com hora, refs e link).
 - O modal do dia ganha um botao "GitLab" que mostra os commits/MRs desse dia (com contagem), alarga para `max-w-2xl` quando aberto, e oferece "Registar horas via IA" ancorado a esse dia. As recomendacoes continuam escondidas por defeito.
 
-**Diferido (alto risco sem testes de UI):** extracao completa do shell do `Calendar/index.tsx` para um layout partilhado + `AppDataProvider` + rota `/kanban` dedicada; e o split interno de `AIPreviewModal`/`Calendar` em ficheiros mais pequenos. A vista Kanban continua acessivel pelo toggle no TopBar.
+**Rotas reais `/` e `/kanban` + provider de dados partilhado:**
+- Novo grupo de rotas `app/(app)/` com `layout.tsx` que monta `components/AppDataProvider.tsx` (auth + dados OpenProject + fetch/refresh/logout). `/` → `CalendarRoute initialView="calendar"`, `/kanban` → `CalendarRoute initialView="kanban"`.
+- O toggle Calendario/Kanban no TopBar passa a navegar (`router.push`) entre `/` e `/kanban`. Como o provider vive no layout do grupo `(app)`, alternar de vista NAO refaz o fetch — os dados persistem.
+- `/setup` fica fora do grupo `(app)`: entrar/sair cruza essa fronteira e re-inicializa o provider com o token fresco (sem token, o provider redireciona para `/setup`). O antigo `app/page.tsx` foi removido (substituido por `app/(app)/page.tsx`).
+
+**Diferido:** o split interno de `AIPreviewModal`/`Calendar` em ficheiros mais pequenos (organizacional; alto risco sem testes de UI).
 
 ### 2026-05-19 — Fase 12: IA como agente multi-accao + GitLab proactivo + modo seguranca + docs-as-charter
 

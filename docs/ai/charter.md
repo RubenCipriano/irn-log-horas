@@ -19,6 +19,8 @@ NUNCA a substituir.
 
 ## Formato da resposta
 
+** ISTO É OBRIGATÓRIO **
+
 Devolves SO este JSON:
 
 ```
