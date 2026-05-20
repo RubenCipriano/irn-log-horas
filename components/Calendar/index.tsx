@@ -300,7 +300,7 @@ export default function Calendar({
       if (data.saved > 0) {
         optimisticAddHours(dayKey, recommendations);
         addToast(`${data.saved} entrada(s) de tempo adicionada(s) com sucesso!`, "success");
-        onMonthChange?.();
+        // Optimistic update already reflects the new hours — no full reload.
         setSelectedDay(null);
       } else {
         throw new Error(data.errors?.[0] || "Nenhuma entrada foi guardada");
@@ -334,7 +334,7 @@ export default function Calendar({
       if (data.deleted > 0) {
         optimisticClearDay(dateKey);
         addToast(`${data.deleted} entrada(s) de tempo apagada(s) com sucesso!`, "success");
-        onMonthChange?.();
+        // Optimistic update already cleared the day locally — no full reload.
       }
       if (data.permissionErrors > 0) {
         addToast(`Sem permissao para apagar ${data.permissionErrors} entrada(s).`, "warning");
@@ -380,7 +380,7 @@ export default function Calendar({
       }
       if (totalSaved > 0) {
         addToast(`${totalSaved} entrada(s) de tempo adicionada(s) em ${dayEntries.length} dia(s)!`, "success");
-        onMonthChange?.();
+        // Optimistic updates already reflect the saved hours — no full reload.
       }
       if (errors.length > 0) {
         addToast(`Erros: ${errors.slice(0, 3).join(", ")}`, "error");
@@ -430,7 +430,7 @@ export default function Calendar({
       }
       if (totalDeleted > 0) {
         addToast(`${totalDeleted} entrada(s) de tempo apagada(s) em ${datesToClear.length} dia(s)!`, "success");
-        onMonthChange?.();
+        // Optimistic updates already cleared the days locally — no full reload.
       } else if (errors.length === 0 && totalPermissionErrors === 0) {
         addToast("Nenhuma hora encontrada para apagar.", "warning");
       }
