@@ -608,6 +608,14 @@ export default function Calendar({
     });
   }, [todoList]);
 
+  // Tasks offered in the "Adicionar tarefa" picker: the calendar list plus the
+  // configured Meetings task (fetched separately, so it isn't in todoList).
+  const assignableTasks = useMemo(() => {
+    if (!meetingsTask) return monthDevelopmentTasks;
+    if (monthDevelopmentTasks.some(t => t.id === meetingsTask.id)) return monthDevelopmentTasks;
+    return [meetingsTask, ...monthDevelopmentTasks];
+  }, [monthDevelopmentTasks, meetingsTask]);
+
   const timelines = useMemo<Record<string, TaskStatusTimeline>>(() => {
     const map: Record<string, TaskStatusTimeline> = {};
     for (const t of todoList) {
@@ -1553,7 +1561,7 @@ export default function Calendar({
       {showTaskAssignment && selectedDay && (
         <TaskAssignmentModal
           dayLabel={selectedDay.date.toLocaleDateString("pt-PT", { weekday: "long", day: "numeric", month: "long" })}
-          allTasks={monthDevelopmentTasks}
+          allTasks={assignableTasks}
           assignedTaskIds={getAssignmentsForDay(toKey(selectedDay.date)).map(a => a.taskId)}
           onAssign={(taskId, taskTitle) => assignTask(taskId, taskTitle, toKey(selectedDay.date))}
           onUnassign={(taskId) => unassignTask(taskId, toKey(selectedDay.date))}
