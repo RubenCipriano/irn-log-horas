@@ -1149,6 +1149,7 @@ export default function Calendar({
           availableStatuses={availableStatuses}
           columns={kanbanColumns}
           weights={statusWeights}
+          isLoading={isLoading}
           authToken={authToken}
           authUrl={authUrl}
           onTaskClick={setSelectedTodo}

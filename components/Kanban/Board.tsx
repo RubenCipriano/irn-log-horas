@@ -20,11 +20,32 @@ type Props = {
   // Column-level controls (inline on the board, no need to open Settings).
   onToggleColumnVisible: (statusId: string) => void;
   onMoveColumn: (statusId: string, direction: "up" | "down") => void;
+  isLoading?: boolean;
 };
+
+// Skeleton shown while the month data is still loading. Just full-height
+// animated column blocks filling the board width.
+function KanbanSkeleton({ columnCount }: { columnCount: number }) {
+  const cols = Array.from({ length: Math.max(5, columnCount) });
+  return (
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="flex-1 overflow-hidden p-4 md:p-6">
+        <div className="flex gap-3 h-full w-full">
+          {cols.map((_, i) => (
+            <div
+              key={`sk-col-${i}`}
+              className="flex-1 min-w-56 h-full rounded-xl bg-slate-200/70 dark:bg-slate-800 animate-pulse-soft"
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function KanbanBoard({
   tasks, availableStatuses, columns, weights, authToken, authUrl, gitlabTaskIds,
-  onTaskClick, onStatusChanged, onToggleColumnVisible, onMoveColumn,
+  onTaskClick, onStatusChanged, onToggleColumnVisible, onMoveColumn, isLoading,
 }: Props) {
   const { addToast } = useToast();
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -98,6 +119,11 @@ export default function KanbanBoard({
       onStatusChanged(taskId, { status: prevStatusName, statusId: prevStatusId, lockVersion: task.lockVersion });
       addToast(`Erro de rede: ${err instanceof Error ? err.message : "tenta de novo"}.`, "error");
     }
+  }
+
+  // While the month data is still loading, show the column skeleton.
+  if (isLoading && tasks.length === 0) {
+    return <KanbanSkeleton columnCount={visibleColumns.length} />;
   }
 
   if (visibleColumns.length === 0 && buckets.overflow.length === 0) {
