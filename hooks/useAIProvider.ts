@@ -2,19 +2,13 @@
 
 import { useCallback, useState } from "react";
 import type { AIProviderConfig } from "@/types";
+import { readJSON, writeJSON, removeKey } from "@/lib/storage/localStore";
 
 const STORAGE_KEY = "ai_provider_config_v1";
 
 function readInitial(): AIProviderConfig | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as AIProviderConfig;
-    if (parsed && parsed.kind) return parsed;
-  } catch {
-    // ignore malformed JSON
-  }
+  const parsed = readJSON<AIProviderConfig | null>(STORAGE_KEY, null);
+  if (parsed && parsed.kind) return parsed;
   return null;
 }
 
@@ -23,20 +17,12 @@ export function useAIProvider() {
 
   const setConfig = useCallback((next: AIProviderConfig) => {
     setConfigState(next);
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      // ignore
-    }
+    writeJSON(STORAGE_KEY, next);
   }, []);
 
   const clear = useCallback(() => {
     setConfigState(null);
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      // ignore
-    }
+    removeKey(STORAGE_KEY);
   }, []);
 
   return { config, setConfig, clear };

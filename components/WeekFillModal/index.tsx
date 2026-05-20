@@ -6,15 +6,6 @@ import { formatHours, toKey, getWeekDays, WEEKDAYS_PT, MONTHS_PT } from "@/lib/c
 import { calculateSmartRecommendations } from "@/lib/recommendations";
 import { getActiveTasksForDay } from "@/lib/task-filtering";
 
-type WeekDay = {
-  date: Date;
-  dayKey: string;
-  label: string;
-  expectedHours: number;
-  actualHours: number;
-  isHoliday: boolean;
-};
-
 type WeekFillModalProps = {
   currentYear: number;
   currentMonth: number;
@@ -57,8 +48,6 @@ export default function WeekFillModal({
   statusWeights,
 }: WeekFillModalProps) {
   const [referenceDate, setReferenceDate] = useState<Date>(today);
-  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
-  const [initialized, setInitialized] = useState(false);
 
   // Compute week data from referenceDate
   const weekDays = useMemo(() => {
@@ -77,14 +66,23 @@ export default function WeekFillModal({
     });
   }, [referenceDate, timeEntries, isHoliday, getExpectedHours]);
 
-  // Auto-select incomplete days when week changes
-  useMemo(() => {
-    const autoSelected = new Set(
+  // Days to auto-select: incomplete, non-holiday. Derived (no setState-in-effect).
+  const autoSelected = useMemo(
+    () => new Set(
       weekDays.filter(d => d.expectedHours > 0 && d.actualHours < d.expectedHours && !d.isHoliday).map(d => d.dayKey)
-    );
+    ),
+    [weekDays],
+  );
+
+  // Selection is seeded from autoSelected and resets when the week changes
+  // (render-time pattern), while preserving manual toggles within a week.
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(autoSelected);
+  const weekKey = toKey(getWeekDays(referenceDate)[0]);
+  const [prevWeekKey, setPrevWeekKey] = useState(weekKey);
+  if (weekKey !== prevWeekKey) {
+    setPrevWeekKey(weekKey);
     setSelectedKeys(autoSelected);
-    setInitialized(true);
-  }, [weekDays]);
+  }
 
   // Calculate per-day recommendations automatically
   const dayRecommendations = useMemo(() => {
@@ -111,7 +109,7 @@ export default function WeekFillModal({
       }));
     }
     return result;
-  }, [weekDays, selectedKeys, allTasks, timeEntries, meetingsTask, meetingsTaskId, timelines, statusWeights]);
+  }, [weekDays, selectedKeys, allTasks, meetingsTask, meetingsTaskId, timelines, statusWeights]);
 
   const selectedDays = weekDays.filter(d => selectedKeys.has(d.dayKey));
 
@@ -137,8 +135,6 @@ export default function WeekFillModal({
       .map(d => ({ date: d.date, recommendations: dayRecommendations[d.dayKey] }));
     if (entries.length > 0) onSave(entries);
   };
-
-  if (!initialized) return null;
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50 p-4" onClick={onClose}>
@@ -168,7 +164,6 @@ export default function WeekFillModal({
             {weekDays.map(day => {
               const recs = dayRecommendations[day.dayKey] || [];
               const isSelected = selectedKeys.has(day.dayKey);
-              const needed = Math.max(0, day.expectedHours - day.actualHours);
               const complete = day.actualHours >= day.expectedHours && day.expectedHours > 0;
 
               return (

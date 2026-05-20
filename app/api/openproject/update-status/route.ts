@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { assertValidExternalUrl, InvalidExternalUrlError } from "@/lib/security/url-validation";
+import { assertNumericId, InvalidIdError } from "@/lib/security/validate";
+import { genericUpstreamError } from "@/lib/security/safe-error";
 
 // PATCH a work package's status. Body: { taskId, statusId, lockVersion }.
 // Headers: Authorization (Bearer <token>), X-OpenProject-URL.
@@ -30,22 +33,35 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  let baseUrl: string;
+  let safeTaskId: string;
+  let safeStatusId: string;
+  try {
+    baseUrl = assertValidExternalUrl(authUrl);
+    safeTaskId = assertNumericId(taskId, "taskId");
+    safeStatusId = assertNumericId(statusId, "statusId");
+  } catch (e) {
+    if (e instanceof InvalidExternalUrlError || e instanceof InvalidIdError) {
+      return NextResponse.json({ error: e.message }, { status: 400 });
+    }
+    throw e;
+  }
+
   // The login route uses Basic auth via `apikey:<token>`. The Calendar's other
   // calls (add-time-entries / clear-time-entries) send "Bearer <token>" and
   // re-encode server-side. Match that convention here.
-  const baseUrl = authUrl.replace(/\/$/, "");
   const token = authorization.replace(/^Bearer\s+/i, "");
   const basicAuth = Buffer.from(`apikey:${token}`).toString("base64");
 
   const patchBody = {
     lockVersion,
     _links: {
-      status: { href: `/api/v3/statuses/${statusId}` },
+      status: { href: `/api/v3/statuses/${safeStatusId}` },
     },
   };
 
   try {
-    const response = await fetch(`${baseUrl}/api/v3/work_packages/${taskId}`, {
+    const response = await fetch(`${baseUrl}/api/v3/work_packages/${safeTaskId}`, {
       method: "PATCH",
       headers: {
         Authorization: `Basic ${basicAuth}`,
@@ -73,14 +89,14 @@ export async function POST(request: NextRequest) {
     }
     if (!response.ok) {
       return NextResponse.json(
-        { error: `openproject_${response.status}`, message: responseText.slice(0, 200) },
+        { error: `openproject_${response.status}`, message: genericUpstreamError("OpenProject", response.status) },
         { status: response.status }
       );
     }
 
     const data = JSON.parse(responseText);
     const statusHref: string = data._links?.status?.href || "";
-    const newStatusId = statusHref.split("/").pop() || statusId;
+    const newStatusId = statusHref.split("/").pop() || safeStatusId;
     return NextResponse.json({
       id: data.id?.toString() || taskId,
       status: data._links?.status?.title || data.status?.name || "",

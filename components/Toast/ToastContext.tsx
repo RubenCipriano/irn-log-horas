@@ -43,8 +43,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   }, [removeToast]);
 
   useEffect(() => {
+    // Capture the ref's current Map so the cleanup uses the same instance that
+    // was live when the effect ran (avoids the stale-ref cleanup warning).
+    const timersMap = timers.current;
     return () => {
-      timers.current.forEach(t => clearTimeout(t));
+      timersMap.forEach(t => clearTimeout(t));
     };
   }, []);
 

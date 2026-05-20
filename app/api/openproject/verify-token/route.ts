@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { DEFAULT_STATUS_WEIGHTS, deriveActiveBounds, inferGaps } from "@/lib/status-timeline";
 import type { StatusSegment, TaskStatusTimeline } from "@/types";
 import { DEFAULT_TIMELINE_INFERENCE } from "@/types";
+import { assertValidExternalUrl, InvalidExternalUrlError } from "@/lib/security/url-validation";
+import type { OpWorkPackage, OpStatus, OpTimeEntry, OpActivityEntry, OpActivityDetail, OpVersion } from "@/lib/openproject/api-types";
+import { mapLimit } from "@/lib/net/mapLimit";
 
 // Function to parse ISO 8601 duration format (e.g., PT8H, PT30M, PT1H30M)
 function parseIsoDuration(duration: string): number {
@@ -149,7 +152,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const baseUrl = url.replace(/\/$/, "");
+    let baseUrl: string;
+    try {
+      baseUrl = assertValidExternalUrl(url);
+    } catch (e) {
+      if (e instanceof InvalidExternalUrlError) {
+        return NextResponse.json({ error: e.message }, { status: 400 });
+      }
+      throw e;
+    }
     const basicAuth = Buffer.from(`apikey:${token}`).toString("base64");
     const headers = {
       Authorization: `Basic ${basicAuth}`,
@@ -182,14 +193,14 @@ export async function POST(request: NextRequest) {
       { headers }
     );
 
-    let workPackages = [];
+    let workPackages: OpWorkPackage[] = [];
     if (workPackagesResponse.ok) {
       const workPackagesData = await workPackagesResponse.json();
       workPackages = workPackagesData._embedded?.elements || [];
     }
 
     // Transform work packages into todos
-    const todos = workPackages.map((wp: any) => {
+    const todos = workPackages.map((wp: OpWorkPackage) => {
       // Extract statusId from "/api/v3/statuses/N" href so we can PATCH later.
       const statusHref: string = wp._links?.status?.href || "";
       const statusId = statusHref.split("/").pop() || undefined;
@@ -209,7 +220,9 @@ export async function POST(request: NextRequest) {
     });
 
     // Fetch activity history for each task and build a full status timeline.
-    const todosWithTimeline = await Promise.all(todos.map(async (todo: any) => {
+    // Bounded concurrency (6 in flight) so a large task list doesn't fan out
+    // into hundreds of simultaneous sockets.
+    const todosWithTimeline = await mapLimit(todos, 6, async (todo) => {
       const createdAt = todo.createdAt || todo.updatedAt || new Date().toISOString().slice(0, 10);
       const transitions: { date: string; newStatus: string }[] = [];
 
@@ -217,13 +230,13 @@ export async function POST(request: NextRequest) {
         const activitiesRes = await fetch(`${baseUrl}/api/v3/work_packages/${todo.id}/activities`, { headers });
         if (activitiesRes.ok) {
           const activitiesData = await activitiesRes.json();
-          const elements = activitiesData._embedded?.elements || [];
+          const elements: OpActivityEntry[] = activitiesData._embedded?.elements || [];
 
           for (const entry of elements) {
             const entryDate = entry.createdAt?.split("T")[0];
             if (!entryDate) continue;
 
-            const details = entry._embedded?.details || entry.details || [];
+            const details: OpActivityDetail[] = entry._embedded?.details || entry.details || [];
             let foundInDetails = false;
             for (const detail of details) {
               const newStatus = extractStatusFromDetail(detail);
@@ -280,11 +293,11 @@ export async function POST(request: NextRequest) {
         activeUntil: bounds.activeUntil,
         timeline,
       };
-    }));
+    });
 
     // Fetch sprint/version details (dates) from unique version hrefs
     const versionHrefs = new Set<string>();
-    workPackages.forEach((wp: any) => {
+    workPackages.forEach((wp: OpWorkPackage) => {
       const href = wp._links?.version?.href;
       if (href) versionHrefs.add(href);
     });
@@ -294,7 +307,7 @@ export async function POST(request: NextRequest) {
       try {
         const versionResponse = await fetch(`${baseUrl}${href}`, { headers });
         if (versionResponse.ok) {
-          const version = await versionResponse.json();
+          const version: OpVersion = await versionResponse.json();
           sprints.push({
             id: version.id?.toString() || href.split("/").pop() || "",
             name: version.name || version._links?.self?.title || "",
@@ -321,7 +334,7 @@ export async function POST(request: NextRequest) {
       const timeEntriesData = await timeEntriesResponse.json();
       const entries = timeEntriesData._embedded?.elements || [];
 
-      entries.forEach((entry: any) => {
+      entries.forEach((entry: OpTimeEntry) => {
         const hours = entry.hours ? parseIsoDuration(entry.hours) : 0;
         if (hours <= 0) return;
 
@@ -365,7 +378,7 @@ export async function POST(request: NextRequest) {
       if (statusesResponse.ok) {
         const statusesData = await statusesResponse.json();
         const elements = statusesData._embedded?.elements || [];
-        availableStatuses = elements.map((s: any) => ({
+        availableStatuses = elements.map((s: OpStatus) => ({
           id: s.id?.toString() || "",
           name: s.name || "",
           isClosed: Boolean(s.isClosed),

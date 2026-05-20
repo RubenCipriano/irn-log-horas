@@ -2,6 +2,7 @@
 
 import { MONTHS_PT } from "@/lib/calendar-utils";
 import type { Theme } from "@/hooks/useTheme";
+import GitLabBanner from "./GitLabBanner";
 
 type Props = {
   year: number;
@@ -21,6 +22,14 @@ type Props = {
   onCycleTheme: () => void;
   view?: "calendar" | "kanban";
   onSetView?: (view: "calendar" | "kanban") => void;
+  // Phase 12 — proactive GitLab banner. When provided + counts > 0 + not
+  // dismissed, the chip renders next to the IA button.
+  gitlabBanner?: {
+    commits: number;
+    mrs: number;
+    onReview: () => void;
+    onDismiss: () => void;
+  };
 };
 
 function IconBtn({
@@ -65,7 +74,7 @@ function ThemeIcon({ theme }: { theme: Theme }) {
 export default function TopBar({
   year, month, onPrev, onNext, onToday, onPalette, onSettings,
   onWeekFill, onMonthFill, onClearMonth, onReload, isReloading, isLoading,
-  theme, onCycleTheme, view = "calendar", onSetView,
+  theme, onCycleTheme, view = "calendar", onSetView, gitlabBanner,
 }: Props) {
   return (
     <header className="sticky top-0 z-30 backdrop-blur bg-[var(--surface-1)]/85 dark:bg-slate-900/85 border-b border-slate-200 dark:border-slate-700">
@@ -160,6 +169,15 @@ export default function TopBar({
         )}
 
         <span className="w-px h-5 bg-slate-200 dark:bg-slate-700 mx-1" />
+
+        {gitlabBanner && (gitlabBanner.commits > 0 || gitlabBanner.mrs > 0) && (
+          <GitLabBanner
+            commits={gitlabBanner.commits}
+            mrs={gitlabBanner.mrs}
+            onReview={gitlabBanner.onReview}
+            onDismiss={gitlabBanner.onDismiss}
+          />
+        )}
 
         {/* Palette */}
         <button

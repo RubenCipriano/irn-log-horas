@@ -184,6 +184,88 @@ plans/                              # Planos historicos + activity-aware redesig
 
 ## Changelog
 
+### 2026-05-20 — Fase 13: Seguranca, hygiene SOLID, performance, /setup, vista GitLab por dia
+
+**Seguranca (rotas API + GitLab):**
+- Novo `lib/security/`: `url-validation.ts` (`assertValidExternalUrl` — valida que o URL do OpenProject/GitLab e http(s) bem-formado antes de qualquer fetch), `validate.ts` (`assertNumericId` para taskId/statusId), `safe-error.ts` (`genericUpstreamError` — nunca devolve o corpo bruto da resposta upstream ao cliente).
+- Aplicado em todas as rotas `app/api/openproject/*` e em `lib/gitlab/client.ts`. Fecha o vetor de fuga do token GitLab (o erro deixava de incluir `body.slice(0,200)`) e o eco de respostas OpenProject (add/clear time-entries, update-status, get-task).
+- `next.config.ts`: headers de seguranca (X-Content-Type-Options, X-Frame-Options DENY, Referrer-Policy, Permissions-Policy, CSP com frame-ancestors 'none', HSTS). CSP mantida conservadora para nao quebrar a hidratacao do Next.
+- Nota: validacao de URL minima (sem allowlist nem bloqueio de IPs privados) por decisao — o deploy do IRN e interno e uma allowlist arriscaria parti-lo.
+
+**Hygiene / SOLID:**
+- ESLint baseline a 0 erros: corrigido setState-em-useEffect (`QuickHoursForm`, agora deriva via `useMemo` + overrides por taskId), setState-em-useMemo (`WeekFillModal`, agora padrao de reset em render), `any` nas rotas (novo `lib/openproject/api-types.ts`), deps desnecessarias e cleanup de ref no Toast.
+- Novos utilitarios partilhados: `lib/storage/localStore.ts` (+ `createLocalStorageHook.ts`) — primitivas SSR-safe que removem o try/catch duplicado; `useAIProvider`/`useGitLabConfig`/`useTimelineInference`/`useWorkSchedule` migrados. `lib/work-schedule.ts` (`expectedHoursForDate`/`expectedHoursForDayKey`) — unifica a logica antes duplicada em `distribute.ts` e `useWorkSchedule`. `lib/net/opFetch.ts` (wrapper de fetch autenticado) e `lib/net/mapLimit.ts` (concorrencia limitada).
+
+**Performance / Next.js:**
+- `verify-token`: o fan-out N+1 de atividades por tarefa passa a usar `mapLimit` (6 em simultaneo) em vez de `Promise.all` sem limite.
+- `app/page.tsx`: removido o `useEffect([])` com eslint-disable — agora corre uma vez com guarda de ref; `fetchTodos` em `useCallback`.
+- `lib/ai/charter.ts`: faz log (sem segredos) quando recorre ao fallback, para um bundle serverless sem `docs/ai/charter.md` ser visivel em vez de silencioso.
+
+**/setup (substitui o cartao de login):**
+- Nova rota `app/setup/page.tsx`: OpenProject (obrigatorio) + GitLab (opcional) + IA (opcional), reutilizando `GitLabSettings` e `AISettings`. Sem token, `app/page.tsx` redireciona para `/setup`; o logout tambem.
+
+**Payload da IA legivel + timestamps:**
+- As chaves do Contexto JSON passaram de abreviadas (`t`/`r`/`d`/`seg`/`h`/`sid`/`k`/`u`/`n`) para auto-descritivas (`title`/`taskIds`/`date`/`segments`/`hoursLogged`/`statusId`/`kind`/`unmatchedRefIds`/`name`); `dias_esperados`→`expectedHoursPerDay`. `docs/ai/charter.md` sincronizado.
+- Cada commit/MR leva agora `time` (HH:MM); a forma resumida leva `firstTime`/`lastTime`. Nova regra no charter: usar o intervalo de tempos do dia para estimar duracao, arredondando a 0.5h e sem ultrapassar o alvo.
+
+**Vista GitLab por dia (modal do dia):**
+- Novo `hooks/useDayGitLabActivity.ts` (fetch lazy + cache por dia) e `components/GitLabActivityList.tsx` (lista partilhada de commits/MRs com hora, refs e link).
+- O modal do dia ganha um botao "GitLab" que mostra os commits/MRs desse dia (com contagem), alarga para `max-w-2xl` quando aberto, e oferece "Registar horas via IA" ancorado a esse dia. As recomendacoes continuam escondidas por defeito.
+
+**Diferido (alto risco sem testes de UI):** extracao completa do shell do `Calendar/index.tsx` para um layout partilhado + `AppDataProvider` + rota `/kanban` dedicada; e o split interno de `AIPreviewModal`/`Calendar` em ficheiros mais pequenos. A vista Kanban continua acessivel pelo toggle no TopBar.
+
+### 2026-05-19 — Fase 12: IA como agente multi-accao + GitLab proactivo + modo seguranca + docs-as-charter
+
+**Charter da IA como ficheiros MD (`docs/ai/`):**
+- `docs/ai/charter.md` — o prompt do sistema canonico em portugues. Carregado em runtime via `lib/ai/charter.ts` (`fs.readFileSync` em modulo init). Editar este ficheiro muda o comportamento da IA sem mudar codigo.
+- `docs/ai/capabilities.md`, `docs/ai/safety.md`, `docs/architecture.md`, `docs/components/{calendar,kanban,ai-flow,gitlab}.md` — espelhos para devs do que a IA sabe + como o sistema esta estruturado.
+
+**Accoes multi-tipo (`AIAction` discriminated union):**
+- Novo tipo `AIAction = log_hours | update_status`. A IA pode agora propor mudancas de estado de tarefa **e** registo de horas no mesmo plano ("Pus os Documentos Compostos em Em Desenvolvimento e proponho 4h hoje").
+- Schema JSON `{"reasoning":"...","actions":[...]}` enviado aos providers que suportam `responseSchema`. Parser aceita o shape legado `{items:[...]}` como `kind:"log_hours"` para back-compat de uma release.
+- `parseDistributeResponse` retorna `actions: ParsedAction[]` com discriminacao por `kind`; valida `toStatusId` contra `availableStatuses`.
+
+**Apply pipeline multi-accao (`lib/ai/apply-actions.ts`):**
+- Helper `applyActions(actions, ctx)` dispara `log_hours` em paralelo por dia (1 POST a `/api/openproject/add-time-entries` por dia) e `update_status` sequencialmente (cada chamada faz bump ao `lockVersion`).
+- Resultados per-accao: succedidas sao apagadas do modal, falhadas ficam vermelhas. Toast "N estados alterados; M falharam" no fim.
+
+**Modo seguranca "understand-first" (`useAISafetyMode`, ON por defeito):**
+- Novo endpoint `app/api/ai/understand/route.ts` faz uma chamada curta que devolve `{"interpretation":"..."}` em 1-2 frases.
+- Quando o toggle esta ON, o flow da paleta passa a ter 2 passos: 1) IA parafraseia o que entendeu; 2) modal "Aqui esta o que entendi: <interpretacao>" com `Avancar` / `Reformular` / `Saltar seguranca`. Saltar afecta so a chamada actual; nao muda o toggle.
+- Hook `useAISafetyMode` persiste em `ai_safety_mode_v1`.
+
+**Banner proactivo GitLab no TopBar:**
+- Hook `useGitLabActivityCheck` fetcha actividade do proprio dia ao montar. Quando ha commits/MRs e o utilizador nao dispensou hoje, o TopBar mostra `[● 5 commits hoje · Revisar]`.
+- Clicar abre a paleta pre-preenchida com `"Revisa a minha actividade GitLab de hoje e propoe alteracoes (estado + horas)."` e `range: "day"`. Nunca auto-executa.
+- Dispensar persiste em `gitlab_banner_dismissed_at_v1`; reaparece no proximo dia.
+
+**Audit log (`useAuditLog`):**
+- Ring buffer de 200 entradas em `audit_log_v1` (localStorage). Cada accao aplicada com sucesso (status change neste momento; horas vao na proxima iteracao) escreve `{ts, kind, taskId, taskTitle, before, after, source}`.
+- Base para a tab "Historico" no SettingsDrawer (UI a vir numa proxima sessao).
+
+**Modal preview com linhas de status:**
+- `AIPreviewModal` renderiza, acima dos grupos de dias, um painel "Mudancas de estado propostas" com checkbox por linha (toggle excluir), badge de confianca (alta/media/baixa) e label `De → Para`.
+- Botao "Aplicar" muda para `Aplicar (Nh + M estados)` quando ha mudancas de estado seleccionadas.
+
+**Charter como prompt sistema:**
+- `buildDistributePrompt` chama `getCharterSystemPrompt()` para a mensagem `role:"system"`. Condicionais runtime (GitLab presente, meetings auto, lista de estados) viram um apendice curto abaixo do charter.
+- A IA recebe agora tambem `estados_disponiveis: [{id, n, c}]` para poder emitir `update_status` validamente.
+
+**Resolucao automatica de refIds (#6026 → tarefa 32397):**
+- O IRN poe a referencia de negocio (#6026) no TITULO de uma tarefa cujo id OpenProject e diferente (#32397). O modelo nao conseguia fazer essa correspondencia de forma fiavel.
+- Agora o `taskIndex` (orquestrador) e o builder do prompt resolvem cada refId em dois passos: (1) id exacto da tarefa, (2) `#NNNN` literal dentro do titulo. O payload enviado a IA ja traz `r` = ids de tarefas resolvidos e `u` = refIds sem correspondencia (que o modelo sinaliza). A regra do charter foi reescrita para "confia em `r`, sinaliza `u`".
+
+**Cobertura do dia (preencher ate ao alvo):**
+- A IA recebe agora `dias_esperados: {"YYYY-MM-DD": <horas>}` com as horas concretas por dia (resolvidas do horario), em vez de ter de inferir a estacao + dia-da-semana a partir do texto.
+- Charter passou a instruir o modelo a ATINGIR `dias_esperados[d]` quando ha actividade GitLab confirmada, distribuindo proporcionalmente pelas tarefas com refId.
+- Safety-net server-side `fillDailyTotals`: escala para CIMA os dias com actividade ate ao esperado (complementa o `clampDailyTotals` que escala para baixo). Nunca inventa horas em dias vazios.
+
+**Outras melhorias:**
+- `DistributeInput` aceita `availableStatuses` e `timeEntriesData`; orchestrator passa-os ao prompt e ao parser.
+- `DistributeResult` agora expoe `actions: AIAction[]` (e mantem `items: AIDistributionItem[]` como alias de back-compat).
+- Mensagem de retry actualizada para pedir `{"actions":[...]}` em vez de `{"items":[...]}`.
+- O Calendar reseta o estado de status-actions em cancel/aplicar, e injecta auditoria em cada update bem-sucedido.
+
 ### 2026-05-19 — Sessao 7: Polish, theme toggle, mais IA, GitLab, inferencia de estados
 
 **Bug fix critico no parser de timeline:**

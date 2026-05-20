@@ -1,42 +1,49 @@
-import type { TodoItem, TaskStatusTimeline, StatusWeightConfig, WorkSchedule, AIDistributionItem, AIProviderConfig, GitLabActivity } from "@/types";
+import type { TodoItem, TaskStatusTimeline, StatusWeightConfig, WorkSchedule, AIAction, AIDistributionItem, AIProviderConfig, GitLabActivity, AvailableStatus } from "@/types";
 import { getProvider } from "./factory";
 import { matchTasks } from "./matcher";
 import { buildDistributePrompt, parseDistributeResponse, promptStats } from "./prompt";
+import { expectedHoursForDayKey } from "@/lib/work-schedule";
 
 // JSON schema describing the LLM's expected output. Providers that support
 // structured output enforce this client-side; others fall back to jsonMode.
+// The new shape uses `actions[]` with a kind discriminator. Older prompts that
+// still emit `items[]` are accepted by the parser for one release.
 const RESPONSE_SCHEMA = {
   type: "object",
   properties: {
     reasoning: { type: "string" },
-    items: {
+    actions: {
       type: "array",
       items: {
         type: "object",
         properties: {
+          kind: { type: "string", enum: ["log_hours", "update_status"] },
           taskId: { type: "string" },
           dayKey: { type: "string" },
           hours: { type: "number" },
+          toStatusId: { type: "string" },
+          toStatusName: { type: "string" },
           reason: { type: "string" },
           confidence: { type: "number" },
         },
-        required: ["taskId", "dayKey", "hours"],
+        required: ["kind", "taskId"],
       },
     },
   },
-  required: ["reasoning", "items"],
+  required: ["reasoning", "actions"],
 } as const;
 
 export type DistributeInput = {
   description: string;
   dateRange: { from: string; to: string };
-  tasks: (Pick<TodoItem, "id" | "title" | "status"> & { timeline?: TaskStatusTimeline })[];
+  tasks: (Pick<TodoItem, "id" | "title" | "status" | "statusId"> & { timeline?: TaskStatusTimeline })[];
   weights: StatusWeightConfig;
   schedule: WorkSchedule;
   providerConfig: AIProviderConfig;
   gitlabActivity?: GitLabActivity[];
   timeEntriesData?: Record<string, number>;
   meetings?: { taskId: string; taskTitle: string; hours: number };
+  availableStatuses?: AvailableStatus[];
   signal?: AbortSignal;
 };
 
@@ -129,6 +136,11 @@ function baselineFromGitLab(
 }
 
 export type DistributeResult = {
+  // New shape (Phase 12): the full plan including log_hours + update_status.
+  actions: AIAction[];
+  // Back-compat alias: only the log_hours actions, in the legacy shape used
+  // by Phase 1-11 components. Will be removed one release after the modal
+  // migrates to `actions`.
   items: AIDistributionItem[];
   warnings: string[];
   reasoning?: string;
@@ -188,21 +200,60 @@ export async function distributeWork(input: DistributeInput): Promise<Distribute
   const matches = matchTasks(input.description, todoItems);
   const top = matches[0];
 
+  // Tasks referenced by in-range GitLab activity (by id or `#ref` in title)
+  // MUST survive the 60-task cap, even when the description doesn't fuzzy-match
+  // them — otherwise a task the user demonstrably worked on (a commit/MR ref)
+  // could be dropped before the LLM ever sees it.
+  const gitlabReferencedIds = new Set<string>();
+  for (const act of inRangeActivity) {
+    for (const ref of act.refIds) {
+      const byId = todoItems.find(t => t.id === ref);
+      if (byId) { gitlabReferencedIds.add(byId.id); continue; }
+      const byTitle = todoItems.find(t => t.title.includes(`#${ref}`));
+      if (byTitle) gitlabReferencedIds.add(byTitle.id);
+    }
+  }
+
   const matchedSet = new Set(matches.map(m => m.task.id));
-  const ranked = [
-    ...matches.map(m => m.task),
-    ...todoItems.filter(t => !matchedSet.has(t.id)),
-  ];
+  // Order: GitLab-referenced first (guaranteed inclusion), then fuzzy matches,
+  // then the rest. Dedupe as we go.
+  const seen = new Set<string>();
+  const ranked: TodoItem[] = [];
+  const pushUnique = (t: TodoItem) => { if (!seen.has(t.id)) { seen.add(t.id); ranked.push(t); } };
+  for (const t of todoItems) if (gitlabReferencedIds.has(t.id)) pushUnique(t);
+  for (const m of matches) pushUnique(m.task);
+  for (const t of todoItems) if (!matchedSet.has(t.id)) pushUnique(t);
 
   const taskSubset = ranked.slice(0, 60);
 
+  // RefId lookup with two paths:
+  // (1) Task's own OpenProject id.
+  // (2) Any `#NNNN` reference found inside the task title — common at IRN
+  //     where the business ticket id (e.g. #6026) appears in the title of a
+  //     task whose numeric OpenProject id is unrelated (#32397). Without
+  //     this, a commit referencing #6026 silently fails to match #32397.
   const taskIndex = new Map<string, { id: string; title: string }>();
-  for (const t of todoItems) taskIndex.set(t.id, { id: t.id, title: t.title });
+  for (const t of todoItems) {
+    taskIndex.set(t.id, { id: t.id, title: t.title });
+    for (const m of t.title.matchAll(/#(\d{3,6})\b/g)) {
+      const ref = m[1];
+      // Don't overwrite a primary id mapping; first task to claim a #ref wins.
+      if (!taskIndex.has(ref)) taskIndex.set(ref, { id: t.id, title: t.title });
+    }
+  }
 
   const gitlabResult = inRangeActivity.length
     ? baselineFromGitLab(inRangeActivity, taskIndex, todoItems, input.dateRange)
     : { items: [], summary: undefined, unmatchedActivities: [] as GitLabActivity[] };
   const gitlabBaseline = gitlabResult.items;
+
+  // Resolve the concrete expected hours for each weekday in the range so the
+  // model has a hard per-day target instead of having to parse a season
+  // description and compute day-of-week itself.
+  const expectedHoursByDay: Record<string, number> = {};
+  for (const dayKey of weekdaysInRange(input.dateRange.from, input.dateRange.to)) {
+    expectedHoursByDay[dayKey] = expectedHoursFor(dayKey, input.schedule);
+  }
 
   const promptInput = {
     description: input.description,
@@ -212,23 +263,29 @@ export async function distributeWork(input: DistributeInput): Promise<Distribute
       id: t.id,
       title: t.title,
       status: t.status,
+      statusId: t.statusId,
       timeline: t.timeline,
       totalHours: input.timeEntriesData?.[t.id],
     })),
     schedule: input.schedule,
+    expectedHoursByDay,
     gitlabActivity: inRangeActivity,
     meetings: input.meetings ? { taskId: input.meetings.taskId, hours: input.meetings.hours } : undefined,
+    availableStatuses: input.availableStatuses,
   };
   const messages = buildDistributePrompt(promptInput);
   const stats = promptStats(promptInput);
 
   const allowedIds = new Set(taskSubset.map(t => t.id));
+  const allowedStatusIds = input.availableStatuses
+    ? new Set(input.availableStatuses.map(s => s.id))
+    : undefined;
   let raw = await provider.chat(messages, { jsonMode: true, jsonSchema: RESPONSE_SCHEMA, temperature: 0.1, signal: input.signal });
   // eslint-disable-next-line prefer-const
-  let { items: parsedItems, warnings, reasoning, itemsFieldMissing } = parseDistributeResponse(raw, allowedIds, input.dateRange);
+  let { actions: parsedActions, warnings, reasoning, itemsFieldMissing } = parseDistributeResponse(raw, allowedIds, input.dateRange, allowedStatusIds);
   let retried = false;
 
-  // 9.5: retry once when the model returned a body with no "items" field and we
+  // 9.5: retry once when the model returned a body with no "actions" field and we
   // actually had data to distribute. Use temperature 0 + schema enforcement.
   const hadDataToDistribute = taskSubset.length > 0 || inRangeActivity.length > 0;
   if (itemsFieldMissing && hadDataToDistribute) {
@@ -238,33 +295,61 @@ export async function distributeWork(input: DistributeInput): Promise<Distribute
       { role: "assistant" as const, content: raw },
       {
         role: "user" as const,
-        content: `Faltou o campo "items" na resposta. Devolve o JSON completo {"reasoning":"...","items":[...]} com pelo menos uma entrada por commit/MR ou tarefa relevante.`,
+        content: `Faltou o campo "actions" na resposta. Devolve o JSON completo {"reasoning":"...","actions":[...]} com pelo menos uma entrada por commit/MR ou tarefa relevante. Cada accao tem de ter "kind":"log_hours" ou "kind":"update_status".`,
       },
     ];
     try {
       raw = await provider.chat(retryMessages, { jsonMode: true, jsonSchema: RESPONSE_SCHEMA, temperature: 0, signal: input.signal });
-      const reparsed = parseDistributeResponse(raw, allowedIds, input.dateRange);
-      parsedItems = reparsed.items;
+      const reparsed = parseDistributeResponse(raw, allowedIds, input.dateRange, allowedStatusIds);
+      parsedActions = reparsed.actions;
       reasoning = reparsed.reasoning ?? reasoning;
-      warnings = [...warnings, "Resposta inicial sem campo items — reformulada via retry.", ...reparsed.warnings];
+      warnings = [...warnings, "Resposta inicial sem campo actions — reformulada via retry.", ...reparsed.warnings];
     } catch (err) {
       warnings.push(`Retry da IA falhou: ${err instanceof Error ? err.message : "erro"}`);
     }
   }
 
-  // Enrich with task title (the LLM only sees IDs in the response)
-  const aiItems: AIDistributionItem[] = parsedItems.map(it => {
-    const task = taskSubset.find(t => t.id === it.taskId);
-    return {
-      taskId: it.taskId,
-      taskTitle: task?.title || `Task #${it.taskId}`,
-      dayKey: it.dayKey,
-      hours: it.hours,
-      reason: it.reason,
-      source: "ai" as const,
-      confidence: it.confidence,
-    };
-  });
+  // Build the typed AIAction list. Resolve task titles + status names from the
+  // subset we sent so the UI doesn't need to lookup again.
+  const statusById = new Map<string, { id: string; name: string }>();
+  for (const s of input.availableStatuses || []) statusById.set(s.id, { id: s.id, name: s.name });
+  const aiHourActions: AIDistributionItem[] = [];
+  const aiStatusActions: Array<Extract<AIAction, { kind: "update_status" }>> = [];
+  for (const a of parsedActions) {
+    const task = taskSubset.find(t => t.id === a.taskId);
+    const taskTitle = task?.title || `Task #${a.taskId}`;
+    if (a.kind === "log_hours") {
+      aiHourActions.push({
+        taskId: a.taskId,
+        taskTitle,
+        dayKey: a.dayKey,
+        hours: a.hours,
+        reason: a.reason,
+        source: "ai",
+        confidence: a.confidence,
+      });
+    } else {
+      // Skip no-op transitions: if the task is already in the requested state.
+      if (task?.statusId && task.statusId === a.toStatusId) {
+        warnings.push(`Ignorada update_status para tarefa "${taskTitle}": ja esta no estado pedido.`);
+        continue;
+      }
+      const toStatus = statusById.get(a.toStatusId);
+      aiStatusActions.push({
+        kind: "update_status",
+        taskId: a.taskId,
+        taskTitle,
+        fromStatusId: task?.statusId,
+        fromStatusName: task?.status,
+        toStatusId: a.toStatusId,
+        toStatusName: a.toStatusName || toStatus?.name || a.toStatusId,
+        reason: a.reason,
+        confidence: a.confidence,
+        source: "ai",
+      });
+    }
+  }
+  const aiItems = aiHourActions;
 
   // Merge GitLab baseline + AI items, de-duplicating by (taskId, dayKey).
   // AI output now wins on collisions so prompt-prioritized tasks take precedence
@@ -299,9 +384,30 @@ export async function distributeWork(input: DistributeInput): Promise<Distribute
   // Hard cap per-day totals to the user's expected hours (Mon-Thu vs Friday in their schedule).
   items = clampDailyTotals(items, input.schedule, warnings);
 
-  if (items.length === 0 && top) {
+  // Fill each active day UP to the expected hours so the user doesn't end up
+  // with a partial day. Only touches days that already have proposed hours —
+  // never invents entries on empty days.
+  items = fillDailyTotals(items, input.schedule, warnings);
+
+  if (items.length === 0 && aiStatusActions.length === 0 && top) {
     warnings.push(`Sugestao baseada apenas em correspondencia textual: ${top.task.title}`);
   }
+
+  // Final plan: log_hours actions (after clamp+merge) + update_status actions
+  // (untouched — they're singletons per task with no daily cap to enforce).
+  const actions: AIAction[] = [
+    ...items.map(it => ({
+      kind: "log_hours" as const,
+      taskId: it.taskId,
+      taskTitle: it.taskTitle,
+      dayKey: it.dayKey,
+      hours: it.hours,
+      reason: it.reason,
+      source: it.source,
+      confidence: it.confidence,
+    })),
+    ...aiStatusActions,
+  ];
 
   const systemMsg = messages.find(m => m.role === "system")?.content || "";
   const userMsg = messages.find(m => m.role === "user")?.content || "";
@@ -323,6 +429,7 @@ export async function distributeWork(input: DistributeInput): Promise<Distribute
       : undefined;
 
   return {
+    actions,
     items,
     warnings,
     reasoning,
@@ -357,13 +464,7 @@ function* weekdaysInRange(from: string, to: string): Generator<string> {
 }
 
 function expectedHoursFor(dayKey: string, schedule: WorkSchedule): number {
-  const d = new Date(dayKey + "T00:00:00");
-  const month = d.getMonth();
-  const dow = d.getDay();
-  if (dow === 0 || dow === 6) return 0;
-  const isSummer = month >= schedule.summerMonths[0] && month < schedule.summerMonths[1];
-  const season = isSummer ? schedule.summer : schedule.winter;
-  return dow >= 1 && dow <= 4 ? season.monThu : season.fri;
+  return expectedHoursForDayKey(dayKey, schedule);
 }
 
 // Scale down each day's items so the sum never exceeds the user's expected hours for that day.
@@ -401,6 +502,47 @@ function clampDailyTotals(items: AIDistributionItem[], schedule: WorkSchedule, w
       runningTotal = scaled.reduce((s, it) => s + it.hours, 0);
     }
     warnings.push(`${dayKey}: proposta original ${total.toFixed(1)}h excedia o esperado (${expected}h) — escalado.`);
+    out.push(...scaled);
+  }
+  return out;
+}
+
+// Scale UP each active day's items so the sum reaches the expected hours.
+// Only days that already have at least one entry are touched — empty days are
+// left empty (we never invent hours where there's no evidence). Distributes
+// the gap proportionally and snaps to 0.5h, putting any rounding remainder on
+// the largest item.
+function fillDailyTotals(items: AIDistributionItem[], schedule: WorkSchedule, warnings: string[]): AIDistributionItem[] {
+  const byDay = new Map<string, AIDistributionItem[]>();
+  for (const it of items) {
+    if (!byDay.has(it.dayKey)) byDay.set(it.dayKey, []);
+    byDay.get(it.dayKey)!.push(it);
+  }
+  const out: AIDistributionItem[] = [];
+  for (const [dayKey, dayItems] of byDay) {
+    const expected = expectedHoursFor(dayKey, schedule);
+    const total = dayItems.reduce((s, it) => s + it.hours, 0);
+    if (expected === 0 || total >= expected || dayItems.length === 0) {
+      out.push(...dayItems);
+      continue;
+    }
+    // Scale up proportionally to reach `expected`.
+    const scale = expected / total;
+    const scaled = dayItems.map(it => ({
+      ...it,
+      hours: Math.max(0.5, Math.round(it.hours * scale * 2) / 2),
+    }));
+    // Add 0.5h at a time to the largest item until we hit the target (rounding
+    // can undershoot).
+    let runningTotal = scaled.reduce((s, it) => s + it.hours, 0);
+    let guard = 0;
+    while (runningTotal < expected && guard < 100) {
+      const idx = scaled.reduce((maxIdx, it, i) => it.hours > scaled[maxIdx].hours ? i : maxIdx, 0);
+      scaled[idx].hours += 0.5;
+      runningTotal = scaled.reduce((s, it) => s + it.hours, 0);
+      guard++;
+    }
+    warnings.push(`${dayKey}: proposta original ${total.toFixed(1)}h preenchida ate ao esperado (${expected}h).`);
     out.push(...scaled);
   }
   return out;

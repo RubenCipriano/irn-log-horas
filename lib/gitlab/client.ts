@@ -1,4 +1,6 @@
 import type { GitLabConfig, GitLabActivity } from "@/types";
+import { assertValidExternalUrl } from "@/lib/security/url-validation";
+import { genericUpstreamError } from "@/lib/security/safe-error";
 
 // Extract OpenProject task IDs from free text. Matches "#32227", "wp-32227", or bare
 // 4-6 digit numbers in commit titles / branch names.
@@ -14,7 +16,8 @@ export function extractTaskIds(text: string): string[] {
 }
 
 async function gitlabFetch(config: GitLabConfig, path: string): Promise<unknown> {
-  const base = config.baseUrl.replace(/\/$/, "");
+  // Validate the user-supplied base URL before building an outbound request.
+  const base = assertValidExternalUrl(config.baseUrl);
   const url = `${base}/api/v4${path.startsWith("/") ? "" : "/"}${path}`;
   const response = await fetch(url, {
     headers: {
@@ -23,8 +26,8 @@ async function gitlabFetch(config: GitLabConfig, path: string): Promise<unknown>
     },
   });
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`GitLab ${response.status}: ${body.slice(0, 200)}`);
+    // Never include the raw upstream body — a GitLab error can echo the token.
+    throw new Error(genericUpstreamError("GitLab", response.status));
   }
   return response.json();
 }

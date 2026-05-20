@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { AIDistributionItem, TodoItem } from "@/types";
+import type { AIDistributionItem, AIUpdateStatusAction, TodoItem } from "@/types";
 import { formatHours } from "@/lib/calendar-utils";
 import { useToast } from "@/components/Toast";
 import ModalCloseButton from "@/components/ModalCloseButton";
@@ -43,7 +43,7 @@ type Props = {
   items: AIDistributionItem[];
   allTasks: TodoItem[];
   onCancel: () => void;
-  onConfirm: (items: AIDistributionItem[]) => void;
+  onConfirm: (items: AIDistributionItem[], statusActions: AIUpdateStatusAction[]) => void;
   isSaving: boolean;
   getExpectedHours: (date: Date) => number | null;
   reasoning?: string;
@@ -55,6 +55,9 @@ type Props = {
   debug?: DebugInfo;
   onRefine?: (feedback: string) => void;   // re-prompt with user feedback
   originalDescription?: string;
+  // Phase 12 — status changes proposed by the AI. Rendered above the day
+  // groups; each row can be skipped (toggle) before Aplicar.
+  statusActions?: AIUpdateStatusAction[];
 };
 
 function formatDay(dayKey: string): string {
@@ -65,9 +68,12 @@ function formatDay(dayKey: string): string {
   });
 }
 
-export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, isSaving, getExpectedHours, reasoning, warnings, rawResponse, gitlabSummary, unmatchedActivities, gitlabActivities, debug, onRefine, originalDescription }: Props) {
+export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, isSaving, getExpectedHours, reasoning, warnings, rawResponse, gitlabSummary, unmatchedActivities, gitlabActivities, debug, onRefine, originalDescription, statusActions }: Props) {
   const { addToast } = useToast();
   const [working, setWorking] = useState<AIDistributionItem[]>(items);
+  // Status-change rows can be toggled off before applying. Stored as a Set of
+  // taskIds (one update_status per task is enforced by the parser).
+  const [excludedStatusTaskIds, setExcludedStatusTaskIds] = useState<Set<string>>(new Set());
   const [showRaw, setShowRaw] = useState(false);
   const [showInspector, setShowInspector] = useState(false);
   const [showGitlabActivity, setShowGitlabActivity] = useState(false);
@@ -158,8 +164,24 @@ export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, i
   const submit = () => {
     if (overCapDays.length > 0) return; // safety net — button should be disabled too
     const filtered = working.filter(it => it.hours > 0);
-    onConfirm(filtered);
+    const enabledStatusActions = (statusActions || []).filter(
+      a => !excludedStatusTaskIds.has(a.taskId)
+    );
+    onConfirm(filtered, enabledStatusActions);
   };
+
+  const toggleStatusAction = (taskId: string) => {
+    setExcludedStatusTaskIds(prev => {
+      const next = new Set(prev);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      return next;
+    });
+  };
+
+  const includedStatusCount = (statusActions || []).filter(
+    a => !excludedStatusTaskIds.has(a.taskId)
+  ).length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-fade-in" onClick={onCancel}>
@@ -331,6 +353,60 @@ export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, i
             </details>
           )}
 
+          {/* Phase 12 — status changes proposed by the AI. Rendered above day
+              groups; each row can be toggled before Aplicar. */}
+          {statusActions && statusActions.length > 0 && (
+            <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/40 dark:bg-indigo-950/20 p-3 space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
+                Mudancas de estado propostas ({statusActions.length})
+              </p>
+              <ul className="space-y-1">
+                {statusActions.map(a => {
+                  const excluded = excludedStatusTaskIds.has(a.taskId);
+                  return (
+                    <li
+                      key={`status-${a.taskId}`}
+                      className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs transition ${
+                        excluded
+                          ? "border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 opacity-60"
+                          : "border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!excluded}
+                        onChange={() => toggleStatusAction(a.taskId)}
+                        className="h-3.5 w-3.5 accent-indigo-500"
+                        aria-label={`Aplicar mudanca de estado para ${a.taskTitle}`}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-slate-900 dark:text-slate-100 truncate">{a.taskTitle}</p>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                          {a.fromStatusName ? <>{a.fromStatusName} → </> : null}
+                          <span className="font-semibold text-indigo-700 dark:text-indigo-300">{a.toStatusName}</span>
+                          {a.reason ? <> · {a.reason}</> : null}
+                        </p>
+                      </div>
+                      {typeof a.confidence === "number" && (
+                        <span
+                          className={`shrink-0 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                            a.confidence >= 0.8
+                              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
+                              : a.confidence >= 0.5
+                                ? "bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
+                                : "bg-orange-100 text-orange-700 dark:bg-orange-950/60 dark:text-orange-300"
+                          }`}
+                        >
+                          {a.confidence >= 0.8 ? "alta" : a.confidence >= 0.5 ? "media" : "baixa"}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
           {/* Raw response when there are no items — helps the user understand why */}
           {grouped.length === 0 && rawResponse && (
             <details className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 p-2.5" open={!reasoning}>
@@ -482,11 +558,15 @@ export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, i
               </button>
               <button
                 onClick={submit}
-                disabled={isSaving || working.length === 0 || overCapDays.length > 0}
+                disabled={isSaving || (working.length === 0 && includedStatusCount === 0) || overCapDays.length > 0}
                 title={overCapDays.length > 0 ? "Ajusta os dias que excedem o limite antes de guardar." : ""}
                 className="rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isSaving ? "A guardar..." : "Aceitar e guardar"}
+                {isSaving
+                  ? "A guardar..."
+                  : includedStatusCount > 0
+                    ? `Aplicar (${working.length}h + ${includedStatusCount} estados)`
+                    : "Aceitar e guardar"}
               </button>
             </div>
           </div>

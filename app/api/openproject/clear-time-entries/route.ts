@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { assertValidExternalUrl, InvalidExternalUrlError } from "@/lib/security/url-validation";
+import { genericUpstreamError } from "@/lib/security/safe-error";
+import type { OpTimeEntry } from "@/lib/openproject/api-types";
 
 export async function POST(request: NextRequest) {
   try {
@@ -22,7 +25,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const baseUrl = url.replace(/\/$/, "");
+    let baseUrl: string;
+    try {
+      baseUrl = assertValidExternalUrl(url);
+    } catch (e) {
+      if (e instanceof InvalidExternalUrlError) {
+        return NextResponse.json({ error: e.message }, { status: 400 });
+      }
+      throw e;
+    }
     const basicAuth = Buffer.from(`apikey:${token}`).toString("base64");
     const headers = {
       Authorization: `Basic ${basicAuth}`,
@@ -49,7 +60,7 @@ export async function POST(request: NextRequest) {
     );
 
     // Paginate through ALL time entries for this user+date
-    let entries: any[] = [];
+    const entries: OpTimeEntry[] = [];
     const pageSize = 200;
     let page = 1;
 
@@ -70,7 +81,7 @@ export async function POST(request: NextRequest) {
             if (!fbResponse.ok) break;
             const fbData = await fbResponse.json();
             const fbElements = fbData._embedded?.elements || [];
-            entries.push(...fbElements.filter((e: any) => e.spentOn === date));
+            entries.push(...fbElements.filter((e: OpTimeEntry) => e.spentOn === date));
             if (fbElements.length < pageSize) break;
             fbPage++;
           }
@@ -118,13 +129,11 @@ export async function POST(request: NextRequest) {
         } else if (deleteResponse.status === 403) {
           permissionErrors++;
         } else {
-          const error = await deleteResponse.text();
-          errors.push(`Entry ${entryId}: ${error}`);
+          // Never echo the raw upstream body.
+          errors.push(`Entry ${entryId}: ${genericUpstreamError("OpenProject", deleteResponse.status)}`);
         }
-      } catch (err) {
-        errors.push(
-          `Entry deletion error: ${err instanceof Error ? err.message : "Unknown error"}`
-        );
+      } catch {
+        errors.push("Entry deletion error: erro de rede.");
       }
     }
 

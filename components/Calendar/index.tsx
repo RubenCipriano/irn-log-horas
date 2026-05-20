@@ -1,13 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { TodoItem, Holiday, SelectedDay, Recommendation, TimeEntriesData, SprintInfo, TaskStatusTimeline, AIDistributionItem, AvailableStatus } from "@/types";
+import type { TodoItem, Holiday, SelectedDay, Recommendation, TimeEntriesData, SprintInfo, TaskStatusTimeline, AIDistributionItem, AIUpdateStatusAction, AvailableStatus } from "@/types";
 import { useWorkSchedule } from "@/hooks/useWorkSchedule";
 import { useTaskAssignments } from "@/hooks/useTaskAssignments";
 import { useStatusWeights } from "@/hooks/useStatusWeights";
 import { useKanbanColumns } from "@/hooks/useKanbanColumns";
 import { useAIProvider } from "@/hooks/useAIProvider";
 import { useGitLabConfig } from "@/hooks/useGitLabConfig";
+import { useGitLabActivityCheck } from "@/hooks/useGitLabActivityCheck";
+import { useDayGitLabActivity } from "@/hooks/useDayGitLabActivity";
+import { useAISafetyMode } from "@/hooks/useAISafetyMode";
+import { useAuditLog } from "@/hooks/useAuditLog";
+import GitLabActivityList from "@/components/GitLabActivityList";
 import { useTimelineInference } from "@/hooks/useTimelineInference";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useTheme } from "@/hooks/useTheme";
@@ -18,14 +23,12 @@ import {
 import { getPortugalHolidays } from "@/lib/holidays";
 import { getStatusWeightForDay } from "@/lib/status-timeline";
 import { useToast } from "@/components/Toast";
-import { getActiveTasksForDay } from "@/lib/task-filtering";
 import TaskAssignmentModal from "@/components/TaskAssignmentModal";
 import DayCell from "./DayCell";
 import TaskModal from "./TaskModal";
 import ConfirmationModal from "./ConfirmationModal";
 import ClearHoursModal from "./ClearHoursModal";
 import ClearMonthModal from "./ClearMonthModal";
-import QuickHoursForm from "@/components/QuickHoursForm";
 import WeekFillModal from "@/components/WeekFillModal";
 import MonthFillModal from "@/components/MonthFillModal";
 import AppShell from "@/components/Layout/AppShell";
@@ -79,6 +82,16 @@ export default function Calendar({
   const kanbanColumns = useMemo(() => mergeKanban(availableStatuses), [mergeKanban, availableStatuses]);
   const { config: aiConfig, setConfig: setAiConfig, clear: clearAiConfig } = useAIProvider();
   const { config: gitlabConfig, setConfig: setGitlabConfig, clear: clearGitlabConfig } = useGitLabConfig();
+  const gitlabCheck = useGitLabActivityCheck(gitlabConfig);
+  const dayGitLab = useDayGitLabActivity(gitlabConfig);
+  const [showDayGitLab, setShowDayGitLab] = useState(false);
+  // Manual per-task hours the user enters in the day modal (taskId -> hours).
+  const [dayManualHours, setDayManualHours] = useState<Record<string, number>>({});
+  const safetyMode = useAISafetyMode();
+  const auditLog = useAuditLog();
+  // Phase 12 — safety mode "understand-first" overlay. Holds the interpretation
+  // returned by the small AI call before the full plan request fires.
+  const [safetyInterp, setSafetyInterp] = useState<{ interpretation: string; description: string; range: "day" | "week" | "month" } | null>(null);
   const { config: inferenceConfig, setConfig: setInferenceConfig, reset: resetInference } = useTimelineInference();
   const { theme, setTheme, cycle: cycleTheme } = useTheme();
 
@@ -141,6 +154,8 @@ export default function Calendar({
   const [aiLastDescription, setAiLastDescription] = useState<string>("");
   const [aiLastRange, setAiLastRange] = useState<"day" | "week" | "month">("week");
   const [aiDebug, setAiDebug] = useState<{ promptSystem: string; promptUser: string; dateRange: { from: string; to: string }; tasksSent: number; gitlabActivitySent: number } | undefined>(undefined);
+  // Phase 12 — status-change actions proposed by the AI alongside log_hours.
+  const [aiStatusActions, setAiStatusActions] = useState<AIUpdateStatusAction[] | undefined>(undefined);
 
   const [showTaskAssignment, setShowTaskAssignment] = useState(false);
   const [showWeekFill, setShowWeekFill] = useState(false);
@@ -149,7 +164,6 @@ export default function Calendar({
   const [currentMonth, setCurrentMonth] = useState(today.getMonth());
   const [selectedTodo, setSelectedTodo] = useState<TodoItem | null>(null);
   const [selectedDay, setSelectedDay] = useState<SelectedDay | null>(null);
-  const [showRecommendation, setShowRecommendation] = useState(false);
   const [meetingsTaskId, setMeetingsTaskId] = useState(() => localStorage.getItem("meetings_task_id") || "5158");
   const [meetingsHours, setMeetingsHoursState] = useState<number>(() => {
     const raw = typeof window !== "undefined" ? localStorage.getItem("meetings_hours_v1") : null;
@@ -205,12 +219,6 @@ export default function Calendar({
     document.body.style.overflow = anyModalOpen ? "hidden" : "";
     return () => { document.body.style.overflow = ""; };
   }, [selectedDay, selectedTodo, confirmationModal, clearHoursModal, showClearMonth, showWeekFill, showMonthFill, showTaskAssignment, settingsOpen, paletteOpen, aiPreview]);
-
-  useEffect(() => {
-    if (selectedDay && selectedDay.expectedHours !== null && !selectedDay.actualHours) {
-      setShowRecommendation(true);
-    }
-  }, [selectedDay]);
 
   useEffect(() => {
     if (meetingsTaskId && authToken && authUrl) {
@@ -294,7 +302,6 @@ export default function Calendar({
         addToast(`${data.saved} entrada(s) de tempo adicionada(s) com sucesso!`, "success");
         onMonthChange?.();
         setSelectedDay(null);
-        setShowRecommendation(false);
       } else {
         throw new Error(data.errors?.[0] || "Nenhuma entrada foi guardada");
       }
@@ -490,6 +497,8 @@ export default function Calendar({
     return map;
   }, [todoList, assignments]);
 
+  // Calendar-display list: scoped to the active sprint / current month so the
+  // grid + fill modals stay focused. Only "fechado"/"closed" is terminal.
   const monthDevelopmentTasks = useMemo(() => {
     return todoList.filter(todo => {
       // Phase 10 semantic: only "fechado"/"closed" is truly terminal.
@@ -506,6 +515,18 @@ export default function Calendar({
       return true;
     });
   }, [todoList, activeSprint, currentMonth, currentYear]);
+
+  // AI candidate list: EVERY non-closed task, independent of sprint/month.
+  // The user wants the assistant to consider all open work (e.g. a task in
+  // another sprint that they touched today via GitLab), not just the scoped
+  // calendar view. The orchestrator ranks + caps this list itself.
+  const aiCandidateTasks = useMemo(() => {
+    return todoList.filter(todo => {
+      if (todo.isClosed) return false;
+      const lower = (todo.status || "").toLowerCase();
+      return !lower.includes("fechado") && !lower.includes("closed");
+    });
+  }, [todoList]);
 
   const timelines = useMemo<Record<string, TaskStatusTimeline>>(() => {
     const map: Record<string, TaskStatusTimeline> = {};
@@ -544,12 +565,59 @@ export default function Calendar({
   const totalCells = Math.ceil((startOffset + daysInMonth) / 7) * 7;
 
   // --- AI command palette flow ---
-  async function handlePaletteSubmit(description: string, range: "day" | "week" | "month") {
+  async function handlePaletteSubmit(description: string, range: "day" | "week" | "month", opts?: { skipSafety?: boolean }) {
     if (!aiConfig) {
       setPaletteOpen(false);
       setSettingsOpen(true);
       return;
     }
+
+    // Phase 12 — understand-first safety step. Short-circuit on the first call
+    // when safety mode is ON; the user approves via the SafetyConfirmModal,
+    // which then re-invokes handlePaletteSubmit with skipSafety=true.
+    if (safetyMode.enabled && !opts?.skipSafety) {
+      paletteAbortRef.current?.abort();
+      const safetyController = new AbortController();
+      paletteAbortRef.current = safetyController;
+      setPaletteProcessing(true);
+      setPaletteStartedAt(Date.now());
+      setPaletteStage("ai");
+      setPaletteDetail("A confirmar a tua intencao...");
+      setAiLastDescription(description);
+      setAiLastRange(range);
+      try {
+        const response = await fetch("/api/ai/understand", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ description, providerConfig: aiConfig }),
+          signal: safetyController.signal,
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Falha na confirmacao");
+        const interp = typeof data.interpretation === "string" ? data.interpretation : "";
+        if (interp) {
+          setPaletteOpen(false);
+          setSafetyInterp({ interpretation: interp, description, range });
+        } else {
+          // No paraphrase came back — fall through to the full plan call.
+          await handlePaletteSubmit(description, range, { skipSafety: true });
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          addToast("Pedido cancelado.", "warning");
+        } else {
+          addToast(`Falha na confirmacao: ${err instanceof Error ? err.message : "erro"}`, "error");
+        }
+      } finally {
+        setPaletteProcessing(false);
+        setPaletteStage("idle");
+        setPaletteDetail("");
+        setPaletteStartedAt(null);
+        paletteAbortRef.current = null;
+      }
+      return;
+    }
+
     // Cancel any previous in-flight palette call
     paletteAbortRef.current?.abort();
     const controller = new AbortController();
@@ -582,10 +650,13 @@ export default function Calendar({
         to = toKey(new Date(anchor.getFullYear(), anchor.getMonth(), lastDay));
       }
 
-      const tasksForAI = monthDevelopmentTasks.map(t => ({
+      // Send EVERY non-closed task to the AI (not just the scoped calendar
+      // view), so work in other sprints/months is still a candidate.
+      const tasksForAI: Array<{ id: string; title: string; status?: string; statusId?: string; timeline?: TaskStatusTimeline }> = aiCandidateTasks.map(t => ({
         id: t.id,
         title: t.title,
         status: t.status,
+        statusId: t.statusId,
         timeline: t.timeline,
       }));
 
@@ -627,6 +698,60 @@ export default function Calendar({
         }
       }
 
+      // On-demand fetch of GitLab-referenced work packages that aren't in the
+      // current task list. The IRN task fetch is scoped (sprint / current
+      // month), so tasks the user touched today but that live outside that
+      // scope (e.g. an older WP just moved to "MR para DEV") never reach the
+      // AI. Here we collect refIds from the activity, drop any that already
+      // resolve (by task id OR `#ref` in a title — so #6026 stays mapped to
+      // #32397), keep only 5-digit ids (this instance's WP ids; 4-digit values
+      // are business refs that live in titles), and fetch them.
+      if (gitlabActivity && Array.isArray(gitlabActivity) && authToken && authUrl) {
+        const knownIds = new Set(tasksForAI.map(t => t.id));
+        const titleHasRef = (ref: string) => tasksForAI.some(t => t.title.includes(`#${ref}`));
+        const candidateRefs = new Set<string>();
+        for (const act of gitlabActivity as Array<{ refIds?: string[] }>) {
+          for (const ref of act.refIds || []) {
+            if (!/^\d{5}$/.test(ref)) continue;          // only OP-shaped ids
+            if (knownIds.has(ref) || titleHasRef(ref)) continue; // already resolvable
+            candidateRefs.add(ref);
+          }
+        }
+        const refsToFetch = Array.from(candidateRefs).slice(0, 10); // cap API calls
+        if (refsToFetch.length > 0) {
+          setPaletteDetail(`A obter ${refsToFetch.length} tarefa(s) referenciada(s) no GitLab...`);
+          const fetched = await Promise.all(refsToFetch.map(async ref => {
+            try {
+              const r = await fetch(`/api/openproject/get-task?taskId=${encodeURIComponent(ref)}`, {
+                headers: { Authorization: `Bearer ${authToken}`, "X-OpenProject-URL": authUrl },
+                signal: controller.signal,
+              });
+              if (!r.ok) return null;
+              const d = await r.json();
+              if (!d?.id || !d?.title) return null;
+              return d as { id: string; title: string; status?: string; statusId?: string; lockVersion?: number };
+            } catch {
+              return null;
+            }
+          }));
+          const newTasks = fetched.filter((t): t is NonNullable<typeof t> => !!t && !knownIds.has(t.id));
+          for (const t of newTasks) {
+            tasksForAI.push({ id: t.id, title: t.title, status: t.status, statusId: t.statusId });
+          }
+          // Also fold them into todoList so the preview can resolve titles and
+          // a follow-up status change has the lockVersion it needs.
+          if (newTasks.length > 0) {
+            onTodosUpdate?.(prev => {
+              const existing = new Set(prev.map(p => p.id));
+              const additions = newTasks
+                .filter(t => !existing.has(t.id))
+                .map(t => ({ id: t.id, title: t.title, status: t.status, statusId: t.statusId, lockVersion: t.lockVersion, date: null } as TodoItem));
+              return additions.length > 0 ? [...prev, ...additions] : prev;
+            });
+          }
+        }
+      }
+
       setPaletteStage("ai");
       setPaletteDetail(`A consultar ${aiConfig.kind} com ${tasksForAI.length} tarefa(s)${gitlabActivity ? ` + ${gitlabActivity.length} item(s) GitLab` : ""}...`);
       const response = await fetch("/api/ai/distribute", {
@@ -648,6 +773,7 @@ export default function Calendar({
             taskTitle: meetingsTask?.title || "Meetings",
             hours: meetingsHours,
           } : undefined,
+          availableStatuses,
         }),
         signal: controller.signal,
       });
@@ -658,12 +784,16 @@ export default function Calendar({
         throw new Error(data.error || "Falha na geracao");
       }
       const items: AIDistributionItem[] = Array.isArray(data.items) ? data.items : [];
+      const statusActionsFromApi: AIUpdateStatusAction[] = Array.isArray(data.actions)
+        ? data.actions.filter((a: { kind?: string }) => a && a.kind === "update_status")
+        : [];
       setAiReasoning(typeof data.reasoning === "string" ? data.reasoning : undefined);
       setAiWarnings(Array.isArray(data.warnings) ? data.warnings : undefined);
       setAiRawResponse(typeof data.rawResponse === "string" ? data.rawResponse : undefined);
       setAiGitlabSummary(data.gitlabSummary && typeof data.gitlabSummary === "object" ? data.gitlabSummary : undefined);
       setAiUnmatched(Array.isArray(data.unmatchedActivities) ? data.unmatchedActivities : undefined);
       setAiDebug(data.debug && typeof data.debug === "object" ? data.debug : undefined);
+      setAiStatusActions(statusActionsFromApi.length > 0 ? statusActionsFromApi : undefined);
       setPaletteOpen(false);
       setAiPreview(items);
     } catch (err) {
@@ -694,7 +824,7 @@ export default function Calendar({
     paletteAbortRef.current?.abort();
   }
 
-  async function saveAIDistribution(items: AIDistributionItem[]) {
+  async function saveAIDistribution(items: AIDistributionItem[], statusActions: AIUpdateStatusAction[] = []) {
     // Group by day
     const grouped = new Map<string, Recommendation[]>();
     for (const it of items) {
@@ -706,6 +836,70 @@ export default function Calendar({
       recommendations: recs,
     }));
     setAiPreview(null);
+    setAiStatusActions(undefined);
+
+    // Status changes: sequential (lockVersion bumps after each call).
+    // Apply BEFORE hours so a "move to Em Desenvolvimento + log 4h" plan
+    // ends with both visible on the next render.
+    let appliedStatusCount = 0;
+    let failedStatusCount = 0;
+    for (const action of statusActions) {
+      if (!authToken || !authUrl) {
+        failedStatusCount++;
+        continue;
+      }
+      const task = todoList.find(t => t.id === action.taskId);
+      if (!task || typeof task.lockVersion !== "number") {
+        failedStatusCount++;
+        continue;
+      }
+      try {
+        const response = await fetch("/api/openproject/update-status", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authToken}`,
+            "X-OpenProject-URL": authUrl,
+          },
+          body: JSON.stringify({ taskId: action.taskId, statusId: action.toStatusId, lockVersion: task.lockVersion }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          failedStatusCount++;
+          addToast(data?.message || `Falha a mudar estado de "${action.taskTitle}".`, "error");
+          continue;
+        }
+        const nextStatus = data.status || action.toStatusName;
+        const nextStatusId = data.statusId || action.toStatusId;
+        const nextLockVersion = typeof data.lockVersion === "number" ? data.lockVersion : task.lockVersion + 1;
+        onTodosUpdate?.(prev => prev.map(t =>
+          t.id === action.taskId
+            ? { ...t, status: nextStatus, statusId: nextStatusId, lockVersion: nextLockVersion }
+            : t
+        ));
+        auditLog.append({
+          kind: "update_status",
+          taskId: action.taskId,
+          taskTitle: action.taskTitle,
+          before: action.fromStatusName || task.status || null,
+          after: nextStatus,
+          source: action.source || "ai",
+        });
+        appliedStatusCount++;
+      } catch (err) {
+        failedStatusCount++;
+        addToast(`Erro de rede a mudar estado: ${err instanceof Error ? err.message : "tenta de novo"}.`, "error");
+      }
+    }
+    if (appliedStatusCount > 0) {
+      addToast(
+        failedStatusCount > 0
+          ? `${appliedStatusCount} estado(s) alterado(s); ${failedStatusCount} falharam.`
+          : `${appliedStatusCount} estado(s) alterado(s).`,
+        failedStatusCount > 0 ? "warning" : "success",
+      );
+    }
+
     await saveMultipleDays(dayEntries);
   }
 
@@ -797,7 +991,7 @@ export default function Calendar({
                 timelines={timelines}
                 statusWeights={statusWeights}
                 onClick={() => {
-                  if (isCurrentMonth) setSelectedDay({ date, todos: dayTodos, holiday, actualHours, expectedHours });
+                  if (isCurrentMonth) { setSelectedDay({ date, todos: dayTodos, holiday, actualHours, expectedHours }); setShowDayGitLab(false); dayGitLab.clear(); setDayManualHours({}); }
                 }}
                 onTodoClick={setSelectedTodo}
                 onClearDay={() => setClearHoursModal(date)}
@@ -863,6 +1057,20 @@ export default function Calendar({
           onCycleTheme={cycleTheme}
           view={view}
           onSetView={setView}
+          gitlabBanner={
+            gitlabCheck.shouldShow && gitlabCheck.counts
+              ? {
+                  commits: gitlabCheck.counts.commits,
+                  mrs: gitlabCheck.counts.mrs,
+                  onReview: () => {
+                    setPalettePrefill("Revisa a minha actividade GitLab de hoje e propoe alteracoes (estado + horas).");
+                    setPaletteRange("day");
+                    openPalette(true);
+                  },
+                  onDismiss: gitlabCheck.dismiss,
+                }
+              : undefined
+          }
         />
       }
       drawer={
@@ -970,9 +1178,30 @@ export default function Calendar({
         const isOver = expected !== null && actual > expected;
         const isComplete = expected !== null && actual >= expected && expected > 0;
         const byDayTaskEntries = timeEntries.byDayTask[dayKey] ? Object.entries(timeEntries.byDayTask[dayKey]) : [];
+
+        // Live list of the day's tasks: the user's assignments for this day,
+        // merged with whatever todos were already active when the day opened.
+        // Driven by `assignments` so adding/removing a task updates immediately.
+        const dayTaskMap = new Map<string, TodoItem>();
+        for (const t of selectedDay.todos) dayTaskMap.set(t.id, t);
+        for (const a of getAssignmentsForDay(dayKey)) {
+          if (dayTaskMap.has(a.taskId)) continue;
+          const full = todoList.find(t => t.id === a.taskId);
+          dayTaskMap.set(a.taskId, full || { id: a.taskId, title: a.taskTitle, date: null });
+        }
+        const dayTasks = Array.from(dayTaskMap.values());
+        const manualTotal = dayTasks.reduce((s, t) => s + (dayManualHours[t.id] || 0), 0);
+
+        const saveManualHours = () => {
+          const recs = dayTasks
+            .filter(t => (dayManualHours[t.id] || 0) > 0)
+            .map(t => ({ taskId: t.id, taskTitle: t.title, hours: dayManualHours[t.id] }));
+          if (recs.length > 0) saveRecommendedHours(selectedDay.date, recs);
+        };
+
         return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 animate-fade-in" onClick={() => setSelectedDay(null)}>
-          <div className="w-full max-w-lg rounded-2xl bg-white dark:bg-slate-900 shadow-2xl border border-slate-200 dark:border-slate-700 max-h-[90vh] flex flex-col animate-slide-up" onClick={e => e.stopPropagation()}>
+          <div className={`w-full ${showDayGitLab ? "max-w-4xl" : "max-w-2xl"} rounded-2xl bg-white dark:bg-slate-900 shadow-2xl border border-slate-200 dark:border-slate-700 h-[85vh] max-h-[85vh] flex flex-col animate-slide-up transition-[max-width]`} onClick={e => e.stopPropagation()}>
             {/* Header */}
             <div className="flex items-start justify-between gap-3 p-5 border-b border-slate-200 dark:border-slate-700">
               <div className="min-w-0">
@@ -984,10 +1213,34 @@ export default function Calendar({
                   </span>
                 )}
               </div>
-              <ModalCloseButton onClick={() => setSelectedDay(null)} />
+              <div className="flex items-center gap-1.5 shrink-0">
+                {gitlabConfig && (
+                  <button
+                    onClick={() => {
+                      const next = !showDayGitLab;
+                      setShowDayGitLab(next);
+                      if (next) dayGitLab.load(dayKey);
+                    }}
+                    title="Ver commits/MRs deste dia no GitLab"
+                    className={`rounded-lg border px-2 py-1.5 text-xs font-medium transition ${
+                      showDayGitLab
+                        ? "border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300"
+                        : "border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    }`}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="inline-block align-text-bottom">
+                      <path d="M8 14l-5-9 2 0 3 5 3-5 2 0z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                    </svg>
+                    <span className="ml-1">GitLab</span>
+                  </button>
+                )}
+                <ModalCloseButton onClick={() => setSelectedDay(null)} />
+              </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5 space-y-5">
+            <div className="flex-1 min-h-0 flex">
+              {/* Left: main content */}
+              <div className="flex-1 min-w-0 overflow-y-auto p-5 space-y-5">
               {/* Progress bar */}
               {expected !== null && expected > 0 && (
                 <div>
@@ -1010,22 +1263,22 @@ export default function Calendar({
                 </div>
               )}
 
-              {/* Tarefas atribuidas */}
+              {/* Tarefas do dia — o utilizador adiciona as tarefas e regista horas/estado */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-[10px] uppercase font-semibold tracking-wide text-slate-500 dark:text-slate-400">
-                    Tarefas atribuidas {selectedDay.todos.length > 0 && <span className="text-slate-400">({selectedDay.todos.length})</span>}
+                    Tarefas do dia {dayTasks.length > 0 && <span className="text-slate-400">({dayTasks.length})</span>}
                   </p>
                   <button
                     onClick={() => setShowTaskAssignment(true)}
                     className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
                   >
-                    + Atribuir
+                    + Adicionar tarefa
                   </button>
                 </div>
-                {selectedDay.todos.length > 0 ? (
+                {dayTasks.length > 0 ? (
                   <div className="space-y-1.5">
-                    {selectedDay.todos.map((todo) => {
+                    {dayTasks.map((todo) => {
                       const weight = timelines[todo.id] ? getStatusWeightForDay(timelines[todo.id], dayKey, statusWeights) : null;
                       const pipColor = weight === null ? "bg-slate-300 dark:bg-slate-600"
                         : weight >= 0.8 ? "bg-emerald-500"
@@ -1033,30 +1286,65 @@ export default function Calendar({
                         : weight > 0 ? "bg-orange-400"
                         : "bg-slate-300 dark:bg-slate-600";
                       return (
-                        <button
+                        <div
                           key={todo.id}
-                          onClick={() => setSelectedTodo(todo)}
-                          className="group w-full flex items-center gap-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-[var(--surface-2)] dark:bg-slate-800/50 p-2.5 hover:border-indigo-300 dark:hover:border-indigo-700 hover:bg-indigo-50/40 dark:hover:bg-indigo-950/20 transition lift-on-hover"
+                          className="group flex items-center gap-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-[var(--surface-2)] dark:bg-slate-800/50 p-2.5 hover:border-indigo-300 dark:hover:border-indigo-700 transition"
                         >
                           <span className={`h-2 w-2 rounded-full shrink-0 ${pipColor}`} />
-                          <div className="flex-1 min-w-0 text-left">
+                          <button
+                            onClick={() => setSelectedTodo(todo)}
+                            title="Abrir tarefa (alterar estado)"
+                            className="flex-1 min-w-0 text-left"
+                          >
                             <p className="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{todo.title}</p>
                             <div className="flex items-center gap-1.5 mt-0.5">
                               <span className="text-[10px] text-slate-500 dark:text-slate-400">#{todo.id}</span>
                               {todo.status && <span className="text-[10px] text-slate-500 dark:text-slate-400">· {todo.status}</span>}
                             </div>
+                          </button>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <input
+                              type="number"
+                              min={0}
+                              max={12}
+                              step={0.5}
+                              value={dayManualHours[todo.id] ?? ""}
+                              placeholder="0"
+                              onChange={(e) => {
+                                const v = parseFloat(e.target.value);
+                                setDayManualHours(prev => ({ ...prev, [todo.id]: Number.isFinite(v) ? Math.max(0, v) : 0 }));
+                              }}
+                              className="w-14 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-1.5 py-1 text-sm text-center font-semibold text-slate-900 dark:text-slate-100 focus:border-indigo-500 focus:outline-none"
+                              title="Horas a registar"
+                            />
+                            <span className="text-[10px] text-slate-400">h</span>
+                            <button
+                              onClick={() => unassignTask(todo.id, dayKey)}
+                              title="Remover tarefa do dia"
+                              className="rounded p-1 text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                                <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                              </svg>
+                            </button>
                           </div>
-                          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="text-slate-300 dark:text-slate-600 group-hover:text-indigo-500 dark:group-hover:text-indigo-400 transition shrink-0">
-                            <path d="M6 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
-                        </button>
+                        </div>
                       );
                     })}
                   </div>
                 ) : (
                   <div className="rounded-lg border border-dashed border-slate-200 dark:border-slate-700 p-4 text-center">
-                    <p className="text-xs text-slate-500 dark:text-slate-400">Nenhuma tarefa atribuida.</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">Nenhuma tarefa. Usa &quot;+ Adicionar tarefa&quot; para escolher as tuas.</p>
                   </div>
+                )}
+                {manualTotal > 0 && (
+                  <button
+                    onClick={saveManualHours}
+                    disabled={isSavingHours}
+                    className="mt-2.5 w-full rounded-lg bg-emerald-500 px-3 py-2 text-xs font-semibold text-white transition hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isSavingHours ? "A guardar..." : `Guardar ${formatHours(manualTotal)}h`}
+                  </button>
                 )}
               </div>
 
@@ -1077,35 +1365,51 @@ export default function Calendar({
                   </div>
                 </div>
               )}
+              </div>
 
-              {/* Recommendations form */}
-              {expected !== null && showRecommendation && (
-                <QuickHoursForm
-                  allTasks={getActiveTasksForDay(monthDevelopmentTasks, dayKey)}
-                  pinnedTaskIds={getAssignmentsForDay(dayKey).map(a => a.taskId)}
-                  expectedHours={expected}
-                  actualHours={actual}
-                  meetingsTask={meetingsTask}
-                  meetingsTaskId={meetingsTaskId}
-                  meetingsHours={meetingsHours}
-                  isSaving={isSavingHours}
-                  dayKey={dayKey}
-                  timelines={timelines}
-                  statusWeights={statusWeights}
-                  onSave={(recs) => setConfirmationModal({ date: selectedDay.date, recommendations: recs })}
-                />
+              {/* Right: GitLab activity panel (sidebar-style, like the task sidebar) */}
+              {showDayGitLab && (
+                <aside className="w-72 shrink-0 border-l border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-900/40 overflow-y-auto p-4 flex flex-col">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-[10px] uppercase font-semibold tracking-wide text-slate-500 dark:text-slate-400">
+                      GitLab
+                      {dayGitLab.activities && dayGitLab.activities.length > 0 && (
+                        <span className="ml-1 text-slate-400">
+                          ({dayGitLab.activities.filter(a => a.type === "commit").length}c · {dayGitLab.activities.filter(a => a.type === "merge_request").length} MR)
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex-1">
+                    {dayGitLab.loading ? (
+                      <p className="text-xs text-slate-500 dark:text-slate-400 italic py-2">A obter atividade…</p>
+                    ) : dayGitLab.error ? (
+                      <p className="text-xs text-rose-600 dark:text-rose-400 py-2">{dayGitLab.error}</p>
+                    ) : (
+                      <GitLabActivityList activities={dayGitLab.activities || []} emptyLabel="Sem commits/MRs neste dia." />
+                    )}
+                  </div>
+                  {dayGitLab.activities && dayGitLab.activities.length > 0 && (
+                    <button
+                      onClick={() => {
+                        setPaletteAnchorDate(selectedDay.date);
+                        setPaletteRange("day");
+                        setPalettePrefill("Analisa a minha atividade GitLab deste dia e propoe horas e estados.");
+                        setSelectedDay(null);
+                        openPalette(false);
+                      }}
+                      className="mt-3 w-full rounded-lg border border-indigo-300 dark:border-indigo-700 bg-white dark:bg-slate-800 px-3 py-2 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition"
+                    >
+                      Registar horas via IA
+                    </button>
+                  )}
+                </aside>
               )}
             </div>
 
             {/* Sticky footer */}
             {expected !== null && (
               <div className="flex gap-2 p-4 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
-                <button
-                  onClick={() => setShowRecommendation(!showRecommendation)}
-                  className="flex-1 rounded-lg bg-indigo-500 px-3 py-2 text-xs font-semibold text-white transition hover:bg-indigo-600"
-                >
-                  {showRecommendation ? "Ocultar recomendacoes" : "Ver recomendacoes"}
-                </button>
                 <button
                   onClick={() => {
                     setPaletteAnchorDate(selectedDay.date);
@@ -1115,7 +1419,7 @@ export default function Calendar({
                     openPalette(false); // keep the anchor/range we just set
                   }}
                   title={`Abrir assistente IA para ${dayKey}`}
-                  className="flex items-center gap-1.5 rounded-lg border border-indigo-300 dark:border-indigo-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition"
+                  className="flex-1 flex items-center justify-center gap-1.5 rounded-lg border border-indigo-300 dark:border-indigo-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition"
                 >
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                     <path d="M2 4l3 8 2-4 4-2-9-2zM10 10l4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -1251,12 +1555,74 @@ export default function Calendar({
         lastTasksFetchedAt={lastTasksFetchedDisplay || undefined}
       />
 
+      {/* Phase 12 — safety-mode "understand-first" overlay. */}
+      {safetyInterp && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4 animate-fade-in" onClick={() => setSafetyInterp(null)}>
+          <div
+            className="w-full max-w-md rounded-2xl bg-white dark:bg-slate-900 shadow-xl border border-slate-200 dark:border-slate-700 animate-slide-up overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-700">
+              <p className="text-[10px] uppercase tracking-wide text-indigo-600 dark:text-indigo-400 font-semibold mb-0.5">Confirmacao</p>
+              <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Aqui esta o que entendi</h2>
+            </div>
+            <div className="p-5 space-y-3">
+              <p className="text-sm text-slate-700 dark:text-slate-200 leading-relaxed">{safetyInterp.interpretation}</p>
+              <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
+                <button
+                  onClick={() => {
+                    const desc = safetyInterp.description;
+                    setSafetyInterp(null);
+                    setPalettePrefill(desc);
+                    setPaletteRange(safetyInterp.range);
+                    setPaletteOpen(true);
+                  }}
+                  className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                >
+                  Reformular
+                </button>
+                <button
+                  onClick={() => {
+                    const { description, range } = safetyInterp;
+                    setSafetyInterp(null);
+                    // Reopen the palette so the progress steps panel is visible
+                    // during the AI call. Same pattern as the Refazer flow.
+                    setPalettePrefill(description);
+                    setPaletteRange(range);
+                    setPaletteOpen(true);
+                    queueMicrotask(() => handlePaletteSubmit(description, range, { skipSafety: true }));
+                  }}
+                  className="rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                  title="Saltar a etapa de confirmacao apenas para este pedido"
+                >
+                  Saltar seguranca
+                </button>
+                <button
+                  onClick={() => {
+                    const { description, range } = safetyInterp;
+                    setSafetyInterp(null);
+                    setPalettePrefill(description);
+                    setPaletteRange(range);
+                    setPaletteOpen(true);
+                    queueMicrotask(() => handlePaletteSubmit(description, range, { skipSafety: true }));
+                  }}
+                  className="rounded-lg bg-indigo-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-600 transition"
+                >
+                  Avancar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {aiPreview && (
         <AIPreviewModal
           items={aiPreview}
           allTasks={todoList}
-          onCancel={() => { setAiPreview(null); setAiReasoning(undefined); setAiWarnings(undefined); setAiRawResponse(undefined); setAiGitlabSummary(undefined); setAiUnmatched(undefined); setAiDebug(undefined); setAiGitlabActivities(undefined); }}
+          onCancel={() => { setAiPreview(null); setAiReasoning(undefined); setAiWarnings(undefined); setAiRawResponse(undefined); setAiGitlabSummary(undefined); setAiUnmatched(undefined); setAiDebug(undefined); setAiGitlabActivities(undefined); setAiStatusActions(undefined); }}
           onConfirm={saveAIDistribution}
+          statusActions={aiStatusActions}
           isSaving={isSavingHours}
           getExpectedHours={getExpectedHours}
           reasoning={aiReasoning}

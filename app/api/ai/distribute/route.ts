@@ -28,6 +28,8 @@ export async function POST(request: NextRequest) {
       providerConfig,
       gitlabActivity: body.gitlabActivity,
       meetings: body.meetings,
+      availableStatuses: body.availableStatuses,
+      timeEntriesData: body.timeEntriesData,
       signal: request.signal,
     });
 

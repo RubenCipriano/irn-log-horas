@@ -118,7 +118,7 @@ export default function MonthFillModal({
       }));
     }
     return result;
-  }, [days, selectedKeys, allTasks, timeEntries, meetingsTask, meetingsTaskId, timelines, statusWeights]);
+  }, [days, selectedKeys, allTasks, meetingsTask, meetingsTaskId, timelines, statusWeights]);
 
   const selectedDays = days.filter(d => selectedKeys.has(d.dayKey));
   const totalHoursToAdd = selectedDays.reduce((sum, d) => sum + d.hoursToAdd, 0);

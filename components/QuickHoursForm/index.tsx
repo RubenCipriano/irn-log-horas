@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import type { TodoItem, SmartRecommendation, Recommendation, TaskStatusTimeline, StatusWeightConfig } from "@/types";
 import { formatHours } from "@/lib/calendar-utils";
 import { calculateSmartRecommendations } from "@/lib/recommendations";
@@ -34,10 +34,11 @@ export default function QuickHoursForm({
   timelines,
   statusWeights,
 }: QuickHoursFormProps) {
-  const [recommendations, setRecommendations] = useState<SmartRecommendation[]>([]);
-
-  useEffect(() => {
-    const recs = calculateSmartRecommendations({
+  // Base recommendations are derived from props (no setState-in-effect). User
+  // edits (toggle / hours / distribute) live in `overrides` keyed by taskId and
+  // are merged on top. Overrides reset when the day changes (render-time pattern).
+  const baseRecommendations = useMemo(
+    () => calculateSmartRecommendations({
       tasks: allTasks,
       pinnedTaskIds,
       expectedHours,
@@ -48,63 +49,77 @@ export default function QuickHoursForm({
       dayKey,
       timelines,
       statusWeights,
-    });
-    setRecommendations(recs);
-  }, [allTasks, pinnedTaskIds, expectedHours, actualHours, meetingsTask, meetingsTaskId, meetingsHours, dayKey, timelines, statusWeights]);
+    }),
+    [allTasks, pinnedTaskIds, expectedHours, actualHours, meetingsTask, meetingsTaskId, meetingsHours, dayKey, timelines, statusWeights],
+  );
+
+  const [overrides, setOverrides] = useState<Record<string, { selected?: boolean; hours?: number }>>({});
+  const [prevDayKey, setPrevDayKey] = useState(dayKey);
+  if (dayKey !== prevDayKey) {
+    setPrevDayKey(dayKey);
+    setOverrides({});
+  }
+
+  const recommendations = useMemo<SmartRecommendation[]>(
+    () => baseRecommendations.map(r => (overrides[r.taskId] ? { ...r, ...overrides[r.taskId] } : r)),
+    [baseRecommendations, overrides],
+  );
 
   const hoursNeeded = Math.max(0, expectedHours - actualHours);
   const selectedRecs = recommendations.filter(r => r.selected);
   const totalSelected = selectedRecs.reduce((sum, r) => sum + r.hours, 0);
   const shortfall = Math.max(0, Math.round((hoursNeeded - totalSelected) * 2) / 2);
 
-  const toggleTask = (index: number) => {
-    setRecommendations(prev => {
-      const updated = [...prev];
-      const rec = updated[index];
-      if (rec.taskId === meetingsTask?.id) return prev; // can't toggle meetings
-      updated[index] = {
-        ...rec,
-        selected: !rec.selected,
-        hours: !rec.selected ? Math.max(rec.hours, 0.5) : rec.hours,
-      };
-      return updated;
-    });
+  const toggleTask = (taskId: string) => {
+    if (taskId === meetingsTask?.id) return; // can't toggle meetings
+    const rec = recommendations.find(r => r.taskId === taskId);
+    if (!rec) return;
+    const nextSelected = !rec.selected;
+    setOverrides(prev => ({
+      ...prev,
+      [taskId]: {
+        ...prev[taskId],
+        selected: nextSelected,
+        hours: nextSelected ? Math.max(rec.hours, 0.5) : rec.hours,
+      },
+    }));
   };
 
-  const updateHours = (index: number, hours: number) => {
-    setRecommendations(prev => {
-      const updated = [...prev];
-      updated[index] = { ...updated[index], hours: Math.max(0, hours) };
-      return updated;
-    });
+  const updateHours = (taskId: string, hours: number) => {
+    setOverrides(prev => ({
+      ...prev,
+      [taskId]: { ...prev[taskId], hours: Math.max(0, hours) },
+    }));
   };
 
   const distributeRemainder = () => {
-    setRecommendations(prev => {
-      const updated = [...prev];
-      const selected = updated.filter(r => r.selected);
-      const currentTotal = selected.reduce((sum, r) => sum + r.hours, 0);
-      const diff = hoursNeeded - currentTotal;
-      if (diff <= 0 || selected.length === 0) return prev;
+    const selected = recommendations.filter(r => r.selected);
+    const currentTotal = selected.reduce((sum, r) => sum + r.hours, 0);
+    const diff = hoursNeeded - currentTotal;
+    if (diff <= 0 || selected.length === 0) return;
 
-      // Distribute equally among selected (excluding meetings)
-      const adjustable = selected.filter(r => r.taskId !== meetingsTask?.id);
-      if (adjustable.length === 0) return prev;
+    // Distribute equally among selected (excluding meetings)
+    const adjustable = selected.filter(r => r.taskId !== meetingsTask?.id);
+    if (adjustable.length === 0) return;
 
-      const extra = Math.round((diff / adjustable.length) * 2) / 2;
-      for (const rec of adjustable) {
-        const idx = updated.indexOf(rec);
-        updated[idx] = { ...rec, hours: rec.hours + extra };
+    const extra = Math.round((diff / adjustable.length) * 2) / 2;
+    const targetHours = new Map<string, number>();
+    for (const rec of adjustable) targetHours.set(rec.taskId, rec.hours + extra);
+
+    // Fix rounding on the last adjustable task.
+    const newTotal = selected.reduce((sum, r) => sum + (targetHours.get(r.taskId) ?? r.hours), 0);
+    const roundingDiff = Math.round((hoursNeeded - newTotal) * 2) / 2;
+    if (roundingDiff !== 0) {
+      const last = adjustable[adjustable.length - 1];
+      targetHours.set(last.taskId, (targetHours.get(last.taskId) ?? last.hours) + roundingDiff);
+    }
+
+    setOverrides(prev => {
+      const next = { ...prev };
+      for (const [taskId, hours] of targetHours) {
+        next[taskId] = { ...next[taskId], selected: true, hours };
       }
-      // Fix rounding
-      const newTotal = updated.filter(r => r.selected).reduce((sum, r) => sum + r.hours, 0);
-      const roundingDiff = Math.round((hoursNeeded - newTotal) * 2) / 2;
-      if (roundingDiff !== 0) {
-        const lastAdj = adjustable[adjustable.length - 1];
-        const lastIdx = updated.indexOf(lastAdj);
-        updated[lastIdx] = { ...updated[lastIdx], hours: updated[lastIdx].hours + roundingDiff };
-      }
-      return updated;
+      return next;
     });
   };
 
@@ -145,7 +160,7 @@ export default function QuickHoursForm({
       </p>
 
       <div className="space-y-1.5 max-h-64 overflow-y-auto mb-3">
-        {recommendations.map((rec, idx) => (
+        {recommendations.map((rec) => (
           <div
             key={rec.taskId}
             className={`flex items-center gap-2 rounded-lg p-2 text-sm transition ${
@@ -157,7 +172,7 @@ export default function QuickHoursForm({
             <input
               type="checkbox"
               checked={rec.selected}
-              onChange={() => toggleTask(idx)}
+              onChange={() => toggleTask(rec.taskId)}
               disabled={rec.taskId === meetingsTask?.id}
               className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
             />
@@ -176,7 +191,7 @@ export default function QuickHoursForm({
                 max={12}
                 step={0.5}
                 value={rec.hours}
-                onChange={(e) => updateHours(idx, parseFloat(e.target.value) || 0)}
+                onChange={(e) => updateHours(rec.taskId, parseFloat(e.target.value) || 0)}
                 className="w-16 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1 text-sm text-center font-semibold text-slate-900 dark:text-slate-100 focus:border-indigo-500 focus:outline-none"
               />
             )}

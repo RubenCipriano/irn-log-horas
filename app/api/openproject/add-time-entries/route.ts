@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { assertValidExternalUrl, InvalidExternalUrlError } from "@/lib/security/url-validation";
+import { genericUpstreamError } from "@/lib/security/safe-error";
 
 // Convert decimal hours to ISO 8601 duration format
 // Examples: 0.5 → "PT30M", 1 → "PT1H", 2.5 → "PT2H30M", 3 → "PT3H"
@@ -40,7 +42,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const baseUrl = url.replace(/\/$/, "");
+    let baseUrl: string;
+    try {
+      baseUrl = assertValidExternalUrl(url);
+    } catch (e) {
+      if (e instanceof InvalidExternalUrlError) {
+        return NextResponse.json({ error: e.message }, { status: 400 });
+      }
+      throw e;
+    }
     const basicAuth = Buffer.from(`apikey:${token}`).toString("base64");
     const headers = {
       Authorization: `Basic ${basicAuth}`,
@@ -70,16 +80,14 @@ export async function POST(request: NextRequest) {
           }),
         });
 
-        const responseText = await response.text();
-        // console.log(`[add-time-entries] Response for ${entry.workPackageId}:`, response.status, responseText.substring(0, 150));
-
         if (response.ok) {
           savedCount++;
         } else {
-          errors.push(`Task ${entry.workPackageId}: ${responseText}`);
+          // Never echo the raw upstream body — it can leak tokens / internal detail.
+          errors.push(`Task ${entry.workPackageId}: ${genericUpstreamError("OpenProject", response.status)}`);
         }
-      } catch (err) {
-        errors.push(`Task ${entry.workPackageId}: ${err instanceof Error ? err.message : "Unknown error"}`);
+      } catch {
+        errors.push(`Task ${entry.workPackageId}: erro de rede.`);
       }
     }
     

@@ -134,16 +134,59 @@ export type AIProviderConfig =
   | { kind: "openai-compat"; baseUrl: string; apiKey?: string; model: string; headers?: Record<string, string> }
   | { kind: "anthropic"; apiKey: string; model?: string };
 
+// Multi-action AI plan (Phase 12). The AI can propose hour entries AND status
+// changes in the same plan. Each action is reviewed individually in the
+// preview modal; the user clicks Aplicar to dispatch.
+export type AIActionSource = "ai" | "gitlab" | "history" | "manual";
+
+export type AILogHoursAction = {
+  kind: "log_hours";
+  taskId: string;
+  taskTitle: string;
+  dayKey: string;
+  hours: number;
+  reason: string;
+  confidence?: number;
+  source?: AIActionSource;
+};
+
+export type AIUpdateStatusAction = {
+  kind: "update_status";
+  taskId: string;
+  taskTitle: string;
+  fromStatusId?: string;
+  fromStatusName?: string;
+  toStatusId: string;
+  toStatusName: string;
+  reason: string;
+  confidence?: number;
+  source?: AIActionSource;
+};
+
+export type AIAction = AILogHoursAction | AIUpdateStatusAction;
+
+// Backwards-compatible alias for the old hours-only shape. New code should
+// branch on `kind` from AIAction. Kept so Phase 1-11 callers compile during
+// the Phase 12 rollout.
 export type AIDistributionItem = {
   taskId: string;
   taskTitle: string;
   dayKey: string;
   hours: number;
   reason: string;
-  source?: "ai" | "gitlab" | "history" | "manual";
-  // 0..1 — how confident the AI / orchestrator is about this entry.
-  // Optional: older responses / older items may not have it.
+  source?: AIActionSource;
   confidence?: number;
+};
+
+// Audit log entry (Phase 12). Persisted to localStorage `audit_log_v1`.
+export type AuditLogEntry = {
+  ts: string;            // ISO 8601
+  kind: "log_hours" | "update_status";
+  taskId: string;
+  taskTitle: string;
+  before: string | number | null;
+  after: string | number;
+  source: AIActionSource;
 };
 
 export type GitLabConfig = {
