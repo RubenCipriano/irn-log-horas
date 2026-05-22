@@ -13,6 +13,45 @@ function segmentsOverlappingRange(segments: StatusSegment[], from: string, to: s
   });
 }
 
+// Status names (lowercase) that count as "active development" for the purpose
+// of day-coverage. A task in one of these states on a given day is a candidate
+// to receive hours even without GitLab evidence. Mirrors the charter's
+// "tarefa em desenvolvimento activo" definition.
+const ACTIVE_DEV_STATUSES = new Set([
+  "em desenvolvimento",
+  "desenvolvido",
+  "mr para dev",
+  "em dev (em testes)",
+  "em qa",
+]);
+
+// Does a task have a segment in an active-dev status that covers `day`?
+// A null toDate means the segment is still open (covers everything from
+// fromDate onward).
+function isActiveOnDay(timeline: TaskStatusTimeline | undefined, day: string): boolean {
+  if (!timeline) return false;
+  return timeline.segments.some(s => {
+    const segEnd = s.toDate ?? "9999-12-31";
+    if (s.fromDate > day || segEnd < day) return false;
+    return ACTIVE_DEV_STATUSES.has(s.statusLower);
+  });
+}
+
+// For each target day, list the task ids in active development that day. This
+// hands the model a ready-made shortlist so it doesn't have to scan every
+// task's segments and do date math itself — the step weak models get wrong.
+function activeTasksByDay(
+  tasks: { id: string; timeline?: TaskStatusTimeline }[],
+  days: string[],
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const day of days) {
+    const ids = tasks.filter(t => isActiveOnDay(t.timeline, day)).map(t => t.id);
+    if (ids.length > 0) out[day] = ids;
+  }
+  return out;
+}
+
 // Extract HH:MM from an ISO timestamp for the AI payload, so it can estimate
 // how long work took from the spread of activity times within a day.
 function timeOf(iso: string): string {
@@ -197,6 +236,10 @@ export function buildDistributePrompt(input: DistributePromptInput): ChatMessage
   // day to this value when there's enough evidence.
   if (input.expectedHoursByDay && Object.keys(input.expectedHoursByDay).length > 0) {
     contextPayload.expectedHoursPerDay = input.expectedHoursByDay;
+    // Pre-resolved shortlist of active-dev tasks per target day, so the model
+    // fills coverage from a ready list instead of re-scanning every segment.
+    const byDay = activeTasksByDay(input.tasks, Object.keys(input.expectedHoursByDay));
+    if (Object.keys(byDay).length > 0) contextPayload.tarefas_activas_por_dia = byDay;
   }
   if (statusList.length > 0) contextPayload.estados_disponiveis = statusList;
   if (gitlabList) contextPayload.atividade_gitlab = gitlabList;

@@ -70,11 +70,15 @@ exemplo: "Pus a tarefa #6012 em Em Desenvolvimento e proponho 4h hoje".
   distribuindo as horas pelas tarefas em desenvolvimento activo nesse dia. A
   actividade GitLab e REFORCO/evidencia para priorizar e estimar, NAO o unico
   criterio. A falta de actividade GitLab nunca e razao para deixar o dia vazio.
-- Como identificar "tarefa em desenvolvimento activo num dia `d`": tem um
-  segmento cujo intervalo [`fromDate`, `toDate`] inclui `d` (ou `toDate` e null/
-  igual a `d`) num estado de trabalho ("Em Desenvolvimento", "Desenvolvido",
-  "MR para DEV", "Em DEV (em testes)", "EM QA"). Tarefas com `hoursLogged` > 0
-  e activas nesse dia sao as candidatas preferidas.
+- `tarefas_activas_por_dia[d]` (quando presente) ja lista os taskIds em
+  desenvolvimento activo nesse dia — usa-o DIRECTAMENTE como o conjunto de
+  candidatas para encher o dia, sem teres de reanalisar os segmentos. Tarefas
+  com `hoursLogged` > 0 dentro dessa lista sao as preferidas.
+- Definicao (caso `tarefas_activas_por_dia` nao venha): "tarefa em
+  desenvolvimento activo num dia `d`" = tem um segmento cujo intervalo
+  [`fromDate`, `toDate`] inclui `d` (ou `toDate` null/igual a `d`) num estado de
+  trabalho ("Em Desenvolvimento", "Desenvolvido", "MR para DEV",
+  "Em DEV (em testes)", "EM QA").
 - Cada commit/MR traz `time` (HH:MM). Usa o intervalo entre o primeiro e o
   ultimo timestamp do dia (e o numero de commits/MRs) como pista para estimar
   quanto tempo o trabalho demorou — mas arredonda SEMPRE a multiplos de 0.5h e

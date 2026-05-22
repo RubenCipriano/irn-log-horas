@@ -184,6 +184,10 @@ plans/                              # Planos historicos + activity-aware redesig
 
 ## Changelog
 
+### 2026-05-22 — Shortlist de tarefas activas por dia no prompt
+
+- `buildDistributePrompt` ([lib/ai/prompt.ts](lib/ai/prompt.ts)) passa a incluir `tarefas_activas_por_dia`: para cada dia-alvo (chaves de `expectedHoursPerDay`), uma lista pre-calculada dos taskIds em desenvolvimento activo nesse dia (segmento a cobrir a data num estado de trabalho — "Em Desenvolvimento", "Desenvolvido", "MR para DEV", "Em DEV (em testes)", "EM QA"). O modelo enche a cobertura a partir desta lista em vez de reanalisar os 60 segmentos e fazer aritmetica de datas — o passo que modelos fracos erram. Charter actualizado para usar a lista directamente.
+
 ### 2026-05-22 — Parser tolerante a `dayKey` em falta
 
 - `parseDistributeResponse` ([lib/ai/prompt.ts](lib/ai/prompt.ts)): aceita `date` como alias de `dayKey` e, quando o intervalo cobre um unico dia (`from === to`), assume esse dia se o modelo omitir o campo. Antes, accoes `log_hours` validas eram descartadas com "Ignorada log_hours com dayKey invalido" so porque o modelo (ex: DeepSeek) nao incluiu `dayKey`. Mensagem de aviso agora diz "(em falta)" quando o campo nao vem de todo.
