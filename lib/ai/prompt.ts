@@ -153,8 +153,10 @@ export type DistributePromptInput = {
 const SUMMARY_THRESHOLD = 30;
 
 export function buildDistributePrompt(input: DistributePromptInput): ChatMessage[] {
-  // Task representation with self-describing keys. Segments stay as tuples
-  // [status, fromDate, toDate, inferred] for compactness.
+  // Task representation with self-describing keys. Segments stay as compact
+  // tuples [status, fromDate, toDate]; a 4th element `1` is appended ONLY when
+  // the segment is inferred (the common, non-inferred case stays at 3 elements
+  // to cut noise/tokens).
   const taskSummaries = input.tasks.map(t => {
     const segments = t.timeline
       ? segmentsOverlappingRange(t.timeline.segments, input.from, input.to)
@@ -163,7 +165,14 @@ export function buildDistributePrompt(input: DistributePromptInput): ChatMessage
       taskId: t.id,
       title: t.title,
       status: t.status,
-      segments: segments.map(s => [s.status, s.fromDate, s.toDate, s.inferred ? 1 : 0] as const),
+      segments: segments.map(s =>
+        s.inferred
+          ? [s.status, s.fromDate, s.toDate, 1]
+          : [s.status, s.fromDate, s.toDate]
+      ),
+      // Sort key: the latest segment start in range (when the task most
+      // recently changed state). Used only for ordering, not sent.
+      _latest: segments.length ? segments[segments.length - 1].fromDate : "",
     };
     if (t.statusId) summary.statusId = t.statusId;
     if (t.totalHours !== undefined && t.totalHours > 0) {
@@ -171,6 +180,11 @@ export function buildDistributePrompt(input: DistributePromptInput): ChatMessage
     }
     return summary;
   });
+
+  // Order tasks chronologically (ascending) by their most recent state change,
+  // so the model reads them oldest → newest. Drop the helper sort key after.
+  taskSummaries.sort((a, b) => String(a._latest).localeCompare(String(b._latest)));
+  for (const s of taskSummaries) delete s._latest;
 
   // Available-statuses payload so the AI can propose update_status actions with
   // valid ids.

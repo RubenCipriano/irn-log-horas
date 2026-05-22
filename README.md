@@ -184,6 +184,11 @@ plans/                              # Planos historicos + activity-aware redesig
 
 ## Changelog
 
+### 2026-05-22 — Serializacao de tarefas no prompt: mais limpa + ordenada
+
+- [lib/ai/prompt.ts](lib/ai/prompt.ts): os segmentos passam a tuplos de 3 elementos `[status, fromDate, toDate]`; o 4o elemento `1` (inferido) so e emitido quando o segmento e mesmo inferido — antes ia sempre `,0` (ruido/tokens a mais). Charter actualizado.
+- As tarefas no prompt passam a estar ordenadas por dia ascendente (pela data da ultima mudanca de estado em intervalo), para o modelo as ler do mais antigo para o mais recente.
+
 ### 2026-05-22 — Janela de sprints (anterior + atual + proxima)
 
 - Novo [lib/sprint-filtering.ts](lib/sprint-filtering.ts): `getSprintWindowNames` / `filterTasksToSprintWindow`. "Atual" = ultima sprint cujo `startDate` ja passou; a janela e `[anterior, atual, proxima]` sobre a ordem cronologica. Tarefas fora da janela — e tarefas SEM sprint — sao descartadas. Salvaguarda: se nenhuma sprint tiver datas, nao filtra (evita lista vazia).
