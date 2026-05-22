@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { AIDistributionItem, AIUpdateStatusAction, TodoItem } from "@/types";
+import type { AIDistributionItem, AIUpdateStatusAction, TodoItem, AvailableStatus } from "@/types";
 import { formatHours } from "@/lib/calendar-utils";
 import { useToast } from "@/components/Toast";
 import ModalCloseButton from "@/components/ModalCloseButton";
@@ -58,6 +58,8 @@ type Props = {
   // Phase 12 — status changes proposed by the AI. Rendered above the day
   // groups; each row can be skipped (toggle) before Aplicar.
   statusActions?: AIUpdateStatusAction[];
+  // Available statuses, so each task row can show + change its status inline.
+  availableStatuses?: AvailableStatus[];
 };
 
 function formatDay(dayKey: string): string {
@@ -68,12 +70,16 @@ function formatDay(dayKey: string): string {
   });
 }
 
-export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, isSaving, getExpectedHours, reasoning, warnings, rawResponse, gitlabSummary, unmatchedActivities, gitlabActivities, debug, onRefine, originalDescription, statusActions }: Props) {
+export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, isSaving, getExpectedHours, reasoning, warnings, rawResponse, gitlabSummary, unmatchedActivities, gitlabActivities, debug, onRefine, originalDescription, statusActions, availableStatuses = [] }: Props) {
   const { addToast } = useToast();
   const [working, setWorking] = useState<AIDistributionItem[]>(items);
   // Status-change rows can be toggled off before applying. Stored as a Set of
   // taskIds (one update_status per task is enforced by the parser).
   const [excludedStatusTaskIds, setExcludedStatusTaskIds] = useState<Set<string>>(new Set());
+  // User-initiated status changes from the inline per-row dropdowns, keyed by
+  // taskId. These are merged into the status actions on submit (and override an
+  // AI-proposed change for the same task).
+  const [manualStatus, setManualStatus] = useState<Map<string, AIUpdateStatusAction>>(new Map());
   const [showRaw, setShowRaw] = useState(false);
   const [showInspector, setShowInspector] = useState(false);
   const [showGitlabActivity, setShowGitlabActivity] = useState(false);
@@ -161,13 +167,19 @@ export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, i
     });
   };
 
+  // Merge AI-proposed status changes (minus toggled-off ones and any the user
+  // overrode manually) with the manual per-row changes. Manual wins per task.
+  const mergedStatusActions = useMemo(() => {
+    const ai = (statusActions || []).filter(
+      a => !excludedStatusTaskIds.has(a.taskId) && !manualStatus.has(a.taskId)
+    );
+    return [...ai, ...Array.from(manualStatus.values())];
+  }, [statusActions, excludedStatusTaskIds, manualStatus]);
+
   const submit = () => {
     if (overCapDays.length > 0) return; // safety net — button should be disabled too
     const filtered = working.filter(it => it.hours > 0);
-    const enabledStatusActions = (statusActions || []).filter(
-      a => !excludedStatusTaskIds.has(a.taskId)
-    );
-    onConfirm(filtered, enabledStatusActions);
+    onConfirm(filtered, mergedStatusActions);
   };
 
   const toggleStatusAction = (taskId: string) => {
@@ -179,9 +191,32 @@ export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, i
     });
   };
 
-  const includedStatusCount = (statusActions || []).filter(
-    a => !excludedStatusTaskIds.has(a.taskId)
-  ).length;
+  // Inline status change from a row dropdown. Selecting the task's current
+  // status clears any pending change.
+  const changeStatus = (task: TodoItem, toStatusId: string) => {
+    setManualStatus(prev => {
+      const next = new Map(prev);
+      if (!toStatusId || toStatusId === task.statusId) {
+        next.delete(task.id);
+      } else {
+        const to = availableStatuses.find(s => s.id === toStatusId);
+        next.set(task.id, {
+          kind: "update_status",
+          taskId: task.id,
+          taskTitle: task.title,
+          fromStatusId: task.statusId,
+          fromStatusName: task.status,
+          toStatusId,
+          toStatusName: to?.name || toStatusId,
+          reason: "Alterado manualmente",
+          source: "manual",
+        });
+      }
+      return next;
+    });
+  };
+
+  const includedStatusCount = mergedStatusActions.length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-fade-in" onClick={onCancel}>
@@ -484,7 +519,33 @@ export default function AIPreviewModal({ items, allTasks, onCancel, onConfirm, i
                             </div>
                             <div className="flex items-center gap-1.5 mt-0.5">
                               <span className="text-[10px] text-slate-500 dark:text-slate-400">#{it.taskId}</span>
-                              {task?.status && <span className="text-[10px] text-slate-500 dark:text-slate-400">· {task.status}</span>}
+                              {task && availableStatuses.length > 0 ? (
+                                <>
+                                  <span className="text-[10px] text-slate-400 dark:text-slate-500">·</span>
+                                  <select
+                                    value={manualStatus.get(task.id)?.toStatusId ?? task.statusId ?? ""}
+                                    onChange={e => changeStatus(task, e.target.value)}
+                                    onClick={e => e.stopPropagation()}
+                                    className={`text-[10px] rounded border bg-white dark:bg-slate-800 px-1 py-0.5 focus:border-indigo-500 focus:outline-none ${
+                                      manualStatus.has(task.id)
+                                        ? "border-indigo-400 text-indigo-700 dark:text-indigo-300 font-medium"
+                                        : "border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300"
+                                    }`}
+                                    title="Mudar o estado desta tarefa"
+                                  >
+                                    {availableStatuses.map(s => (
+                                      <option key={s.id} value={s.id}>{s.name}</option>
+                                    ))}
+                                  </select>
+                                  {manualStatus.has(task.id) && (
+                                    <span className="text-[9px] font-semibold uppercase tracking-wide text-indigo-600 dark:text-indigo-400">
+                                      {manualStatus.get(task.id)?.fromStatusName || "?"} →
+                                    </span>
+                                  )}
+                                </>
+                              ) : task?.status ? (
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400">· {task.status}</span>
+                              ) : null}
                             </div>
                             {it.reason && (
                               <p className="text-[11px] text-slate-500 dark:text-slate-400 italic mt-1">{it.reason}</p>

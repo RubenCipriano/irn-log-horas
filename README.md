@@ -184,6 +184,10 @@ plans/                              # Planos historicos + activity-aware redesig
 
 ## Changelog
 
+### 2026-05-22 — Mudar o estado das tarefas no preview da IA
+
+- [components/AIPreviewModal/index.tsx](components/AIPreviewModal/index.tsx): cada linha de horas passa a mostrar um dropdown com o estado actual da tarefa, que se pode alterar inline. As mudancas manuais (`source: "manual"`) sao fundidas com as mudancas de estado propostas pela IA no momento de Aplicar (a manual ganha quando ha conflito por tarefa). O contador do botao ("Aplicar (Xh + N estados)") reflecte ambas. A aplicacao reutiliza o pipeline existente do `saveAIDistribution` (PATCH /update-status com lockVersion). Nova prop `availableStatuses` ligada em [components/Calendar/index.tsx](components/Calendar/index.tsx).
+
 ### 2026-05-22 — "Tarefa activa no dia" deixa de incluir Desenvolvido parado
 
 Problema: `tarefas_activas_por_dia` incluia qualquer tarefa com um segmento "Desenvolvido" aberto a cobrir o dia — mesmo as que ficaram Desenvolvidas ha semanas e estao paradas. Isso enchia a shortlist (23 tarefas, quase todas paradas) e o modelo registava horas nelas em vez das que estavam mesmo a ser trabalhadas.

@@ -1694,6 +1694,7 @@ export default function Calendar({
           onCancel={() => { setAiPreview(null); setAiReasoning(undefined); setAiWarnings(undefined); setAiRawResponse(undefined); setAiGitlabSummary(undefined); setAiUnmatched(undefined); setAiDebug(undefined); setAiGitlabActivities(undefined); setAiStatusActions(undefined); }}
           onConfirm={saveAIDistribution}
           statusActions={aiStatusActions}
+          availableStatuses={availableStatuses}
           isSaving={isSavingHours}
           getExpectedHours={getExpectedHours}
           reasoning={aiReasoning}
