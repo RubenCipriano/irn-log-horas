@@ -80,10 +80,12 @@ exemplo: "Pus a tarefa #6012 em Em Desenvolvimento e proponho 4h hoje".
   candidatas para encher o dia, sem teres de reanalisar os segmentos. Tarefas
   com `hoursLogged` > 0 dentro dessa lista sao as preferidas.
 - Definicao (caso `tarefas_activas_por_dia` nao venha): "tarefa em
-  desenvolvimento activo num dia `d`" = tem um segmento cujo intervalo
-  [`fromDate`, `toDate`] inclui `d` (ou `toDate` null/igual a `d`) num estado de
-  trabalho ("Em Desenvolvimento", "Desenvolvido", "MR para DEV",
-  "Em DEV (em testes)", "EM QA").
+  desenvolvimento activo num dia `d`" = (a) num dia `d` estava num estado de
+  PIPELINE de trabalho ("Em Desenvolvimento", "MR para DEV", "Em DEV (em
+  testes)", "Em Code Review", "Em Testes", "EM QA"), OU (b) mudou de estado a
+  ate ~2 dias de `d` (ex: chegou a "Desenvolvido" nesse proprio dia). NAO conta
+  uma tarefa que esta em "Desenvolvido"/"Novo"/"On hold"/"Bloqueado" ha muito
+  tempo sem qualquer transicao recente — essa esta parada, nao activa.
 - Cada commit/MR traz `time` (HH:MM). Usa o intervalo entre o primeiro e o
   ultimo timestamp do dia (e o numero de commits/MRs) como pista para estimar
   quanto tempo o trabalho demorou — mas arredonda SEMPRE a multiplos de 0.5h e

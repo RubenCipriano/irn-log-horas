@@ -2,31 +2,59 @@ import type { WorkSchedule, TaskStatusTimeline, GitLabActivity, AvailableStatus 
 import type { ChatMessage } from "./provider";
 import { getCharterSystemPrompt, getUnderstandFirstPrompt } from "./charter";
 
-// Only keep segments overlapping the requested date range. The LLM doesn't need
-// the task's full history — it needs to know what state the task is in DURING
-// the days we're asking it to propose hours for.
-// Status names (lowercase) that count as "active development" for the purpose
-// of day-coverage. A task in one of these states on a given day is a candidate
-// to receive hours even without GitLab evidence. Mirrors the charter's
-// "tarefa em desenvolvimento activo" definition.
-const ACTIVE_DEV_STATUSES = new Set([
+// "Pipeline" states: the task is actively moving through dev/review. A task
+// COVERED by one of these on a given day was genuinely being worked on then.
+// Crucially this EXCLUDES resting/terminal states — "Desenvolvido", "Novo",
+// "On hold", "Bloqueado", closed — so a task that reached "Desenvolvido" weeks
+// ago and just sits there is NOT treated as active. Compared accent-insensitive.
+const PIPELINE_STATUSES = new Set([
   "em desenvolvimento",
-  "desenvolvido",
   "mr para dev",
   "em dev (em testes)",
+  "em code review",
+  "em testes",
   "em qa",
+  "em mitigacao",
+  "em reproducao",
+  "pronto para testes qa",
+  "em testes de aceitacao",
+  "pronto para testes de aceitacao",
 ]);
 
-// Does a task have a segment in an active-dev status that covers `day`?
-// A null toDate means the segment is still open (covers everything from
-// fromDate onward).
+// How many days around `d` a state change still counts as "recent activity".
+// Catches tasks that JUST transitioned (e.g. reached "Desenvolvido" on/near the
+// day) without flooding the list with long-finished tasks.
+const RECENT_TRANSITION_DAYS = 2;
+
+function stripAccents(s: string): string {
+  return s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
+}
+
+function daysApart(a: string, b: string): number {
+  const da = Date.parse(a + "T00:00:00Z");
+  const db = Date.parse(b + "T00:00:00Z");
+  if (Number.isNaN(da) || Number.isNaN(db)) return Infinity;
+  return Math.abs(da - db) / 86_400_000;
+}
+
+// A task is "active on day d" when EITHER:
+//  (1) it's covered on d by a pipeline (working) state — actively in dev/review; OR
+//  (2) it changed state within RECENT_TRANSITION_DAYS of d — recently touched
+//      (e.g. it reached "Desenvolvido" that very day).
+// This deliberately rejects tasks resting in a terminal state since long before d.
 function isActiveOnDay(timeline: TaskStatusTimeline | undefined, day: string): boolean {
   if (!timeline) return false;
-  return timeline.segments.some(s => {
+  for (const s of timeline.segments) {
+    // (1) covered by a pipeline state
     const segEnd = s.toDate ?? "9999-12-31";
-    if (s.fromDate > day || segEnd < day) return false;
-    return ACTIVE_DEV_STATUSES.has(s.statusLower);
-  });
+    if (s.fromDate <= day && segEnd >= day && PIPELINE_STATUSES.has(stripAccents(s.statusLower))) {
+      return true;
+    }
+    // (2) a state change (segment boundary) close to the day
+    if (daysApart(s.fromDate, day) <= RECENT_TRANSITION_DAYS) return true;
+    if (s.toDate && daysApart(s.toDate, day) <= RECENT_TRANSITION_DAYS) return true;
+  }
+  return false;
 }
 
 // For each target day, list the task ids in active development that day. This

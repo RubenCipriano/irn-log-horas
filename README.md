@@ -184,6 +184,12 @@ plans/                              # Planos historicos + activity-aware redesig
 
 ## Changelog
 
+### 2026-05-22 — "Tarefa activa no dia" deixa de incluir Desenvolvido parado
+
+Problema: `tarefas_activas_por_dia` incluia qualquer tarefa com um segmento "Desenvolvido" aberto a cobrir o dia — mesmo as que ficaram Desenvolvidas ha semanas e estao paradas. Isso enchia a shortlist (23 tarefas, quase todas paradas) e o modelo registava horas nelas em vez das que estavam mesmo a ser trabalhadas.
+
+- [lib/ai/prompt.ts](lib/ai/prompt.ts): `isActiveOnDay` redefinida. Uma tarefa e activa no dia `d` se (a) nesse dia estava num estado de PIPELINE de trabalho (Em Desenvolvimento, MR para DEV, Em DEV (em testes), Em Code Review, Em Testes, EM QA) — "Desenvolvido"/"Novo"/"On hold"/"Bloqueado"/terminal NAO contam; OU (b) mudou de estado a ate 2 dias de `d` (ex: chegou a "Desenvolvido" nesse proprio dia). Comparacao de estados insensivel a acentos. Charter actualizado com a nova definicao.
+
 ### 2026-05-22 — Historico de estados completo no prompt
 
 - [lib/ai/prompt.ts](lib/ai/prompt.ts): deixamos de filtrar os segmentos ao intervalo pedido (`segmentsOverlappingRange` removido). A IA passa a receber o HISTORICO COMPLETO de cada tarefa — todos os estados por que passou e quando — tal como aparece na timeline da UI. Antes, num pedido de 1 dia, so via o segmento que tocava esse dia e perdia o contexto (Novo → MR para DEV → Desenvolvido → EM QA…). Charter actualizado para o modelo saber que `segments` e o historico completo.
