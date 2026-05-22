@@ -184,6 +184,11 @@ plans/                              # Planos historicos + activity-aware redesig
 
 ## Changelog
 
+### 2026-05-22 — Janela de sprints (anterior + atual + proxima)
+
+- Novo [lib/sprint-filtering.ts](lib/sprint-filtering.ts): `getSprintWindowNames` / `filterTasksToSprintWindow`. "Atual" = ultima sprint cujo `startDate` ja passou; a janela e `[anterior, atual, proxima]` sobre a ordem cronologica. Tarefas fora da janela — e tarefas SEM sprint — sao descartadas. Salvaguarda: se nenhuma sprint tiver datas, nao filtra (evita lista vazia).
+- Aplicado globalmente em [components/AppDataProvider.tsx](components/AppDataProvider.tsx) ao carregar os dados, por isso a sidebar, o calendario e o assistente de IA passam todos a ver o mesmo conjunto. Deixam de aparecer work packages abertos ha mais de ~1 mes.
+
 ### 2026-05-22 — Descricao do MR como contexto (IDs + excerto)
 
 - [lib/gitlab/client.ts](lib/gitlab/client.ts): a descricao do MR e agora lida. O `extractTaskIds` corre tambem sobre ela, por isso um `Refs: #32195` no corpo (mesmo que o titulo nao o tenha) produz match automatico/deterministico. Novo helper `snippetOf` condensa a descricao (remove markdown, colapsa espacos) num excerto de ate 240 chars.

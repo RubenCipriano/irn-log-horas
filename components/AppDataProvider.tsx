@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { useRouter } from "next/navigation";
 import type { TodoItem, TimeEntriesData, SprintInfo, AvailableStatus } from "@/types";
 import { readJSON } from "@/lib/storage/localStore";
+import { filterTasksToSprintWindow } from "@/lib/sprint-filtering";
 
 const EMPTY_TIME_ENTRIES: TimeEntriesData = { byDay: {}, byTask: {}, byDayTask: {} };
 const DEFAULT_URL = "https://projetos.irn.justica.gov.pt/";
@@ -70,13 +71,18 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       });
       if (response.ok) {
         const data = await response.json();
+        const sprintsData: SprintInfo[] = data.sprints || [];
         const todosWithDates = (data.todos || []).map((todo: TodoItem & { date: string | null }) => ({
           ...todo,
           date: todo.date ? new Date(todo.date) : null,
         }));
-        setTodosState(todosWithDates);
+        // Trim stale work packages: keep only the previous/current/next sprint
+        // window (tasks without a sprint are dropped). Applied globally here so
+        // the sidebar, calendar AND the AI assistant all see the same set.
+        const scopedTodos = filterTasksToSprintWindow(todosWithDates, sprintsData);
+        setTodosState(scopedTodos);
         setTimeEntriesState(data.timeEntries || EMPTY_TIME_ENTRIES);
-        setSprints(data.sprints || []);
+        setSprints(sprintsData);
         setAvailableStatuses(Array.isArray(data.availableStatuses) ? data.availableStatuses : []);
         if (data.user) setUser(data.user);
       }
