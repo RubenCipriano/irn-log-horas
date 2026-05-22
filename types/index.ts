@@ -200,6 +200,7 @@ export type GitLabActivity = {
   title: string;
   project: string;
   createdAt: string;     // ISO 8601
-  refIds: string[];      // OpenProject task IDs parsed from title/branch (e.g. ["32227"])
+  refIds: string[];      // OpenProject task IDs parsed from title/branch/description (e.g. ["32227"])
   url: string;
+  descriptionSnippet?: string; // bounded MR description excerpt for fuzzy context
 };

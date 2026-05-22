@@ -130,6 +130,10 @@ Os refIds em commits/MRs ja vem pre-resolvidos pelo orquestrador:
 - Campo `taskIds` lista os ids das tarefas JA CONFIRMADAS (correspondencia por
   id da tarefa, ou `#NNNN` literal dentro do titulo). Usa-os directamente como
   evidencia — nao precisas de pesquisar pelo titulo.
+- Campo `desc` (quando presente, so em MRs) e um excerto da descricao do MR.
+  Usa-o como contexto extra para perceber o tema do trabalho e escolher a
+  tarefa mais provavel quando `taskIds` esta vazio — mas continua a NAO inventar
+  associacoes fracas (ver regra dos refIds nao-resolvidos abaixo).
 - Campo `unmatchedRefIds` (quando presente) lista refIds que NAO bateram com
   nenhuma tarefa. Para cada um, adiciona uma linha no `reasoning` no formato
   exacto: "Nao encontrei a tarefa #X mencionada no commit '<titulo>' — pode

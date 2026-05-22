@@ -15,6 +15,21 @@ export function extractTaskIds(text: string): string[] {
   return Array.from(ids);
 }
 
+// Condense an MR description into a short, single-line excerpt for the AI
+// prompt. Strips markdown noise (headings, list/quote markers, emphasis) and
+// collapses whitespace so the model gets readable context at a bounded token
+// cost. Returns undefined for empty/blank input.
+function snippetOf(text: string | undefined, max = 240): string | undefined {
+  if (!text) return undefined;
+  const cleaned = text
+    .replace(/```[\s\S]*?```/g, " ")   // drop fenced code blocks
+    .replace(/[#>*_`~|-]+/g, " ")       // markdown markers
+    .replace(/\s+/g, " ")               // collapse whitespace/newlines
+    .trim();
+  if (!cleaned) return undefined;
+  return cleaned.length > max ? cleaned.slice(0, max).trimEnd() + "…" : cleaned;
+}
+
 async function gitlabFetch(config: GitLabConfig, path: string): Promise<unknown> {
   // Validate the user-supplied base URL before building an outbound request.
   const base = assertValidExternalUrl(config.baseUrl);
@@ -115,6 +130,7 @@ export async function fetchRecentActivity(config: GitLabConfig, since: Date, unt
     mrPath,
   ) as Array<{
     title: string;
+    description?: string;
     updated_at: string;
     created_at: string;
     web_url: string;
@@ -125,9 +141,12 @@ export async function fetchRecentActivity(config: GitLabConfig, since: Date, unt
 
   const mrActivities: GitLabActivity[] = await Promise.all(
     mrs.map(async (mr) => {
+      // The MR description often carries the OpenProject id (e.g. "Refs: #32195")
+      // even when the title doesn't — parse it for a deterministic match.
       const refIds = Array.from(new Set([
         ...extractTaskIds(mr.title),
         ...extractTaskIds(mr.source_branch || ""),
+        ...extractTaskIds(mr.description || ""),
       ]));
       const project = await projectName(mr.project_id);
       return {
@@ -137,6 +156,7 @@ export async function fetchRecentActivity(config: GitLabConfig, since: Date, unt
         createdAt: mr.updated_at || mr.created_at,
         refIds,
         url: mr.web_url,
+        descriptionSnippet: snippetOf(mr.description),
       };
     })
   );

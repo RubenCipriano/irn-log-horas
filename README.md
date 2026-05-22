@@ -184,6 +184,12 @@ plans/                              # Planos historicos + activity-aware redesig
 
 ## Changelog
 
+### 2026-05-22 — Descricao do MR como contexto (IDs + excerto)
+
+- [lib/gitlab/client.ts](lib/gitlab/client.ts): a descricao do MR e agora lida. O `extractTaskIds` corre tambem sobre ela, por isso um `Refs: #32195` no corpo (mesmo que o titulo nao o tenha) produz match automatico/deterministico. Novo helper `snippetOf` condensa a descricao (remove markdown, colapsa espacos) num excerto de ate 240 chars.
+- `GitLabActivity.descriptionSnippet` (novo campo, [types/index.ts](types/index.ts)) transporta esse excerto. O prompt ([lib/ai/prompt.ts](lib/ai/prompt.ts)) inclui-o como `desc` em cada item GitLab, dando ao modelo contexto fuzzy para escolher a tarefa quando nao ha id resolvido. Charter actualizado.
+- Commits nao trazem corpo (o evento de push so da `commit_title`), por isso isto aplica-se a MRs.
+
 ### 2026-05-22 — Shortlist de tarefas activas por dia no prompt
 
 - `buildDistributePrompt` ([lib/ai/prompt.ts](lib/ai/prompt.ts)) passa a incluir `tarefas_activas_por_dia`: para cada dia-alvo (chaves de `expectedHoursPerDay`), uma lista pre-calculada dos taskIds em desenvolvimento activo nesse dia (segmento a cobrir a data num estado de trabalho — "Em Desenvolvimento", "Desenvolvido", "MR para DEV", "Em DEV (em testes)", "EM QA"). O modelo enche a cobertura a partir desta lista em vez de reanalisar os 60 segmentos e fazer aritmetica de datas — o passo que modelos fracos erram. Charter actualizado para usar a lista directamente.

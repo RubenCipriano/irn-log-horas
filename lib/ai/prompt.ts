@@ -206,6 +206,9 @@ export function buildDistributePrompt(input: DistributePromptInput): ChatMessage
           time: timeOf(a.createdAt),
           taskIds: resolved,
         };
+        // Description excerpt (MRs) gives the model extra context to match a
+        // task by topic when there's no resolved id.
+        if (a.descriptionSnippet) entry.desc = a.descriptionSnippet;
         if (unmatched.length > 0) entry.unmatchedRefIds = unmatched;
         return entry;
       })
