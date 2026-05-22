@@ -56,9 +56,10 @@ exemplo: "Pus a tarefa #6012 em Em Desenvolvimento e proponho 4h hoje".
   disser que trabalhou nelas.
 - prefere tarefas em "Em Desenvolvimento"; reduz horas em estados de revisao
   (MR em DEV/QA, em teste)
-- cada segmento e um tuplo `[status, fromDate, toDate]`. Quando tem um 4o
-  elemento `1`, e um segmento inferido (assumpcao) — usa valores conservadores.
-  Sem 4o elemento, o segmento e real.
+- cada segmento e um objecto `{estado, de, ate}`: `estado` = nome do estado,
+  `de` = data em que entrou nesse estado, `ate` = data em que saiu (ausente
+  quando ainda esta nesse estado). Se tiver `inferido: true`, e uma assumpcao —
+  usa valores conservadores.
 - tarefas com campo `hoursLogged` > 0 ja tem trabalho registado — boas
   candidatas para continuar
 

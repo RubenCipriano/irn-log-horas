@@ -184,9 +184,9 @@ plans/                              # Planos historicos + activity-aware redesig
 
 ## Changelog
 
-### 2026-05-22 — Serializacao de tarefas no prompt: mais limpa + ordenada
+### 2026-05-22 — Serializacao de tarefas no prompt: legivel + ordenada
 
-- [lib/ai/prompt.ts](lib/ai/prompt.ts): os segmentos passam a tuplos de 3 elementos `[status, fromDate, toDate]`; o 4o elemento `1` (inferido) so e emitido quando o segmento e mesmo inferido — antes ia sempre `,0` (ruido/tokens a mais). Charter actualizado.
+- [lib/ai/prompt.ts](lib/ai/prompt.ts): os segmentos passam de tuplos para objectos auto-descritivos `{estado, de, ate}` (chaves PT, como na UI) — legivel para o modelo e para nos. `ate` so aparece quando o estado ja terminou; `inferido: true` marca assumpcoes. Charter actualizado.
 - As tarefas no prompt passam a estar ordenadas por dia ascendente (pela data da ultima mudanca de estado em intervalo), para o modelo as ler do mais antigo para o mais recente.
 
 ### 2026-05-22 — Janela de sprints (anterior + atual + proxima)

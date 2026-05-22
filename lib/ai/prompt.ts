@@ -153,10 +153,11 @@ export type DistributePromptInput = {
 const SUMMARY_THRESHOLD = 30;
 
 export function buildDistributePrompt(input: DistributePromptInput): ChatMessage[] {
-  // Task representation with self-describing keys. Segments stay as compact
-  // tuples [status, fromDate, toDate]; a 4th element `1` is appended ONLY when
-  // the segment is inferred (the common, non-inferred case stays at 3 elements
-  // to cut noise/tokens).
+  // Task representation with self-describing keys. Segments are objects
+  // {estado, de, ate} (PT keys, matching the UI) so both the model and a human
+  // reading the prompt can follow what happened. `ate` is omitted while the
+  // status is still current (open segment); `inferido: true` marks a synthesized
+  // (assumed) segment.
   const taskSummaries = input.tasks.map(t => {
     const segments = t.timeline
       ? segmentsOverlappingRange(t.timeline.segments, input.from, input.to)
@@ -165,11 +166,12 @@ export function buildDistributePrompt(input: DistributePromptInput): ChatMessage
       taskId: t.id,
       title: t.title,
       status: t.status,
-      segments: segments.map(s =>
-        s.inferred
-          ? [s.status, s.fromDate, s.toDate, 1]
-          : [s.status, s.fromDate, s.toDate]
-      ),
+      segments: segments.map(s => {
+        const seg: Record<string, unknown> = { estado: s.status, de: s.fromDate };
+        if (s.toDate) seg.ate = s.toDate;
+        if (s.inferred) seg.inferido = true;
+        return seg;
+      }),
       // Sort key: the latest segment start in range (when the task most
       // recently changed state). Used only for ordering, not sent.
       _latest: segments.length ? segments[segments.length - 1].fromDate : "",
