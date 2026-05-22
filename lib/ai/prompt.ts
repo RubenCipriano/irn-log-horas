@@ -323,10 +323,16 @@ export function parseDistributeResponse(
     }
 
     if (kind === "log_hours") {
-      const dayKey = typeof r.dayKey === "string" ? r.dayKey : "";
+      // Tolerate common LLM slips: accept `date` as an alias for `dayKey`, and
+      // when the request covers a single day, default a missing dayKey to it
+      // (the model only had one day to choose from anyway).
+      let dayKey = typeof r.dayKey === "string" && r.dayKey
+        ? r.dayKey
+        : (typeof r.date === "string" ? r.date : "");
+      if (!dayKey && range.from === range.to) dayKey = range.from;
       const hoursRaw = typeof r.hours === "number" ? r.hours : parseFloat(String(r.hours ?? "0"));
       if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) {
-        warnings.push(`Ignorada log_hours com dayKey invalido: ${dayKey}`);
+        warnings.push(`Ignorada log_hours com dayKey invalido: ${dayKey || "(em falta)"}`);
         continue;
       }
       if (dayKey < range.from || dayKey > range.to) {

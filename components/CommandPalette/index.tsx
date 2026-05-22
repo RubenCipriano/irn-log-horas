@@ -22,7 +22,7 @@ type Props = {
   lastTasksFetchedAt?: number;
 };
 
-const GITLAB_PROMPT = "Analisa a minha atividade no GitLab no intervalo dado (commits + MRs) e propoe horas. Para cada commit/MR: se mencionar #ID, associa diretamente; caso contrario, escolhe a tarefa mais provavel comparando o titulo do commit com os titulos das tarefas. Distribui as horas pelos dias em que houve atividade real, respeitando o limite diario do horario.";
+const GITLAB_PROMPT = "Preenche cada dia util do intervalo ate ao limite diario do horario, distribuindo as horas pelas tarefas em desenvolvimento activo nesse dia. Usa a minha atividade no GitLab (commits + MRs) como reforco: se um commit/MR mencionar #ID, associa essa tarefa diretamente e da-lhe prioridade; caso contrario, compara o titulo do commit com os titulos das tarefas. Se a atividade GitLab nao chegar para encher o dia, completa com as restantes tarefas em desenvolvimento activo nesse dia.";
 
 const SUGGESTIONS = [
   "Trabalhei nos Documentos Compostos esta semana",

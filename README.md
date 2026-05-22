@@ -184,6 +184,18 @@ plans/                              # Planos historicos + activity-aware redesig
 
 ## Changelog
 
+### 2026-05-22 — Parser tolerante a `dayKey` em falta
+
+- `parseDistributeResponse` ([lib/ai/prompt.ts](lib/ai/prompt.ts)): aceita `date` como alias de `dayKey` e, quando o intervalo cobre um unico dia (`from === to`), assume esse dia se o modelo omitir o campo. Antes, accoes `log_hours` validas eram descartadas com "Ignorada log_hours com dayKey invalido" so porque o modelo (ex: DeepSeek) nao incluiu `dayKey`. Mensagem de aviso agora diz "(em falta)" quando o campo nao vem de todo.
+
+### 2026-05-22 — Cobertura do dia baseada na timeline (GitLab como reforco)
+
+Quando a unica pista era um commit/MR sem `#ID` correspondente, o assistente deixava o dia vazio (modelos fracos chegavam a inventar uma associacao errada). Agora a timeline lidera e o GitLab e reforco:
+
+- **`docs/ai/charter.md` — seccao "Cobertura do dia" reforcada.** O alvo passa a ser sempre encher cada dia util ate `expectedHoursPerDay[d]`, distribuindo pelas tarefas em desenvolvimento activo no dia. Adicionada definicao explicita de "tarefa em desenvolvimento activo num dia" (segmento que inclui a data em estado de trabalho) e um **FALLBACK obrigatorio**: se a evidencia GitLab nao chegar, completa com essas tarefas (com `confidence` baixa e `reason` a indicar que e por estado/timeline). So deixa o dia por encher quando nao existe nenhuma tarefa activa, registando a falha numa linha do `reasoning` ("Faltam Xh em \<dia\> sem evidencia suficiente para atribuir").
+- **Presets de instrucao reescritos** ([components/CommandPalette/index.tsx](components/CommandPalette/index.tsx) `GITLAB_PROMPT` e prefill por dia em [components/Calendar/index.tsx](components/Calendar/index.tsx)) para liderarem com "preenche ate ao limite com tarefas em desenvolvimento activo" e tratarem o GitLab como reforco.
+- Nota: o `reasoning` (texto livre) substitui o pedido inicial de "warnings" — o schema da resposta nao tem campo `warnings` (esses sao gerados pelo parser, nao pelo modelo).
+
 ### 2026-05-20 — Fase 13: Seguranca, hygiene SOLID, performance, /setup, vista GitLab por dia
 
 **Seguranca (rotas API + GitLab):**

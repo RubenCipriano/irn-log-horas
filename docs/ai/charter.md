@@ -66,20 +66,31 @@ exemplo: "Pus a tarefa #6012 em Em Desenvolvimento e proponho 4h hoje".
 - `expectedHoursPerDay[d]` indica as horas esperadas para esse dia (ex: 9h numa
   terca, 7h numa sexta). Usa SEMPRE este valor como alvo — nao tentes
   inferir o horario a partir da descricao por estacao.
-- Para cada dia com actividade GitLab confirmada (`taskIds` preenchido), a soma
-  das `log_hours` desse dia deve ATINGIR `expectedHoursPerDay[d]`, sem
-  ultrapassar. Nao deixes horas em falta quando ha trabalho real registado.
+- O objectivo e SEMPRE encher cada dia util ate `expectedHoursPerDay[d]`,
+  distribuindo as horas pelas tarefas em desenvolvimento activo nesse dia. A
+  actividade GitLab e REFORCO/evidencia para priorizar e estimar, NAO o unico
+  criterio. A falta de actividade GitLab nunca e razao para deixar o dia vazio.
+- Como identificar "tarefa em desenvolvimento activo num dia `d`": tem um
+  segmento cujo intervalo [`fromDate`, `toDate`] inclui `d` (ou `toDate` e null/
+  igual a `d`) num estado de trabalho ("Em Desenvolvimento", "Desenvolvido",
+  "MR para DEV", "Em DEV (em testes)", "EM QA"). Tarefas com `hoursLogged` > 0
+  e activas nesse dia sao as candidatas preferidas.
 - Cada commit/MR traz `time` (HH:MM). Usa o intervalo entre o primeiro e o
   ultimo timestamp do dia (e o numero de commits/MRs) como pista para estimar
   quanto tempo o trabalho demorou — mas arredonda SEMPRE a multiplos de 0.5h e
   nunca ultrapasses `expectedHoursPerDay[d]`. Na forma resumida usa
   `firstTime`/`lastTime`.
-- Distribui o tempo proporcionalmente pelas tarefas confirmadas em `taskIds` —
-  uma tarefa com mais commits/MRs leva mais horas. Arredonda a multiplos de 0.5.
-- Se a actividade GitLab nao chegar para encher o dia, podes acrescentar
-  tarefas em "Em Desenvolvimento" / "Desenvolvido" activas nesse dia.
-- So deixas o dia por encher se realmente nao houver evidencia suficiente —
-  e nesse caso explica no `reasoning`.
+- Distribui o tempo proporcionalmente: as tarefas confirmadas em `taskIds`
+  (mais commits/MRs => mais horas) levam prioridade; o RESTANTE ate ao alvo
+  reparte-se pelas outras tarefas em desenvolvimento activo nesse dia.
+  Arredonda a multiplos de 0.5.
+- FALLBACK (obrigatorio): se a evidencia GitLab nao cobrir
+  `expectedHoursPerDay[d]`, COMPLETA o dia com as tarefas em desenvolvimento
+  activo nesse dia (definicao acima) ate atingir o alvo. Para essas linhas usa
+  `confidence` baixa (0.3-0.5) e indica no `reason` que e por estado/timeline.
+- So deixas o dia por encher se realmente nao existir NENHUMA tarefa em
+  desenvolvimento activo nesse dia. Nesse caso, acrescenta ao `reasoning` uma
+  linha no formato: "Faltam Xh em <dia> sem evidencia suficiente para atribuir."
 
 ## Regras (update_status)
 

@@ -1465,7 +1465,7 @@ export default function Calendar({
                       onClick={() => {
                         setPaletteAnchorDate(selectedDay.date);
                         setPaletteRange("day");
-                        setPalettePrefill("Analisa a minha atividade GitLab deste dia e propoe horas e estados.");
+                        setPalettePrefill("Preenche este dia ate ao limite do horario com as tarefas em desenvolvimento activo, usando a minha atividade GitLab deste dia como reforco. Propoe tambem mudancas de estado se fizer sentido.");
                         setSelectedDay(null);
                         openPalette(false);
                       }}
