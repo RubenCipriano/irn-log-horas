@@ -56,6 +56,9 @@ exemplo: "Pus a tarefa #6012 em Em Desenvolvimento e proponho 4h hoje".
   disser que trabalhou nelas.
 - prefere tarefas em "Em Desenvolvimento"; reduz horas em estados de revisao
   (MR em DEV/QA, em teste)
+- `segments` e o HISTORICO COMPLETO de estados da tarefa, por ordem
+  cronologica — todos os estados por que passou e quando, nao so os do
+  intervalo pedido. Usa-o para perceber o que foi feito e quando.
 - cada segmento e um objecto `{estado, de, ate}`: `estado` = nome do estado,
   `de` = data em que entrou nesse estado, `ate` = data em que saiu (ausente
   quando ainda esta nesse estado). Se tiver `inferido: true`, e uma assumpcao —

@@ -184,6 +184,10 @@ plans/                              # Planos historicos + activity-aware redesig
 
 ## Changelog
 
+### 2026-05-22 — Historico de estados completo no prompt
+
+- [lib/ai/prompt.ts](lib/ai/prompt.ts): deixamos de filtrar os segmentos ao intervalo pedido (`segmentsOverlappingRange` removido). A IA passa a receber o HISTORICO COMPLETO de cada tarefa — todos os estados por que passou e quando — tal como aparece na timeline da UI. Antes, num pedido de 1 dia, so via o segmento que tocava esse dia e perdia o contexto (Novo → MR para DEV → Desenvolvido → EM QA…). Charter actualizado para o modelo saber que `segments` e o historico completo.
+
 ### 2026-05-22 — Serializacao de tarefas no prompt: legivel + ordenada
 
 - [lib/ai/prompt.ts](lib/ai/prompt.ts): os segmentos passam de tuplos para objectos auto-descritivos `{estado, de, ate}` (chaves PT, como na UI) — legivel para o modelo e para nos. `ate` so aparece quando o estado ja terminou; `inferido: true` marca assumpcoes. Charter actualizado.

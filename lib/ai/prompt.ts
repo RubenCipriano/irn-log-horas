@@ -1,18 +1,10 @@
-import type { WorkSchedule, TaskStatusTimeline, StatusSegment, GitLabActivity, AvailableStatus } from "@/types";
+import type { WorkSchedule, TaskStatusTimeline, GitLabActivity, AvailableStatus } from "@/types";
 import type { ChatMessage } from "./provider";
 import { getCharterSystemPrompt, getUnderstandFirstPrompt } from "./charter";
 
 // Only keep segments overlapping the requested date range. The LLM doesn't need
 // the task's full history — it needs to know what state the task is in DURING
 // the days we're asking it to propose hours for.
-function segmentsOverlappingRange(segments: StatusSegment[], from: string, to: string): StatusSegment[] {
-  return segments.filter(s => {
-    const segStart = s.fromDate;
-    const segEnd = s.toDate ?? "9999-12-31";
-    return segStart <= to && segEnd >= from;
-  });
-}
-
 // Status names (lowercase) that count as "active development" for the purpose
 // of day-coverage. A task in one of these states on a given day is a candidate
 // to receive hours even without GitLab evidence. Mirrors the charter's
@@ -153,15 +145,15 @@ export type DistributePromptInput = {
 const SUMMARY_THRESHOLD = 30;
 
 export function buildDistributePrompt(input: DistributePromptInput): ChatMessage[] {
-  // Task representation with self-describing keys. Segments are objects
-  // {estado, de, ate} (PT keys, matching the UI) so both the model and a human
-  // reading the prompt can follow what happened. `ate` is omitted while the
-  // status is still current (open segment); `inferido: true` marks a synthesized
-  // (assumed) segment.
+  // Task representation with self-describing keys. We send the FULL status
+  // history (every state the task passed through and when), not just the
+  // segments overlapping the requested range — the model needs the whole story
+  // to understand what was done. Segments are objects {estado, de, ate} (PT
+  // keys, matching the UI) so both the model and a human reading the prompt can
+  // follow what happened. `ate` is omitted while the status is still current
+  // (open segment); `inferido: true` marks a synthesized (assumed) segment.
   const taskSummaries = input.tasks.map(t => {
-    const segments = t.timeline
-      ? segmentsOverlappingRange(t.timeline.segments, input.from, input.to)
-      : [];
+    const segments = t.timeline?.segments ?? [];
     const summary: Record<string, unknown> = {
       taskId: t.id,
       title: t.title,
@@ -172,8 +164,8 @@ export function buildDistributePrompt(input: DistributePromptInput): ChatMessage
         if (s.inferred) seg.inferido = true;
         return seg;
       }),
-      // Sort key: the latest segment start in range (when the task most
-      // recently changed state). Used only for ordering, not sent.
+      // Sort key: the latest segment start (when the task most recently
+      // changed state). Used only for ordering, not sent.
       _latest: segments.length ? segments[segments.length - 1].fromDate : "",
     };
     if (t.statusId) summary.statusId = t.statusId;
