@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "A+ILjys8iws=",
+  "success": true,
+  "projectFilePath": "d:\\Projects\\irn-log-horas\\backend\\TimeFlow.Billing\\TimeFlow.Billing.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\ruben\\.nuget\\packages\\questpdf\\2026.5.0\\questpdf.2026.5.0.nupkg.sha512"
+  ],
+  "logs": []
+}

@@ -1,0 +1,13 @@
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\bin\Release\net8.0\TimeFlow.Cache.deps.json
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\bin\Release\net8.0\TimeFlow.Cache.dll
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\bin\Release\net8.0\TimeFlow.Cache.pdb
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\obj\Release\net8.0\TimeFlow.Cache.csproj.AssemblyReference.cache
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\obj\Release\net8.0\TimeFlow.Cache.GeneratedMSBuildEditorConfig.editorconfig
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\obj\Release\net8.0\TimeFlow.Cache.AssemblyInfoInputs.cache
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\obj\Release\net8.0\TimeFlow.Cache.AssemblyInfo.cs
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\obj\Release\net8.0\TimeFlow.Cache.csproj.CoreCompileInputs.cache
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\obj\Release\net8.0\TimeFlow.Cache.sourcelink.json
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\obj\Release\net8.0\TimeFlow.Cache.dll
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\obj\Release\net8.0\refint\TimeFlow.Cache.dll
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\obj\Release\net8.0\TimeFlow.Cache.pdb
+D:\Projects\irn-log-horas\backend\TimeFlow.Cache\obj\Release\net8.0\ref\TimeFlow.Cache.dll

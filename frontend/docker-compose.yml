@@ -1,0 +1,33 @@
+# Frontend-only docker-compose. Use this when you want to ship the
+# static SPA bundle in isolation — `docker compose up` brings up just the
+# nginx-alpine container serving the Next.js export.
+#
+# For local dev with hot-reload, don't use this — run `npm run dev`
+# directly so Vite's HMR + next.config.ts API proxy work properly.
+# This compose is for the production-shape image.
+
+services:
+  frontend:
+    build:
+      context: .
+      args:
+        # Where the SPA reaches the backend FROM THE BROWSER. Inlined
+        # into the JS bundle at build time. Defaults to the backend's
+        # host port from backend/docker-compose.yml. Override per env:
+        #   docker compose build --build-arg API_BASE_URL=https://api.example.com
+        API_BASE_URL: ${API_BASE_URL:-http://localhost:5001}
+    container_name: timeflow-frontend
+    restart: unless-stopped
+    # In the full-stack root compose the proxy reaches this on the
+    # shared internal network. Expose 8080 → 80 here so you can hit the
+    # SPA directly at http://localhost:8080 when running standalone.
+    ports:
+      - "8080:80"
+    networks:
+      - timeflow_internal
+
+# Explicit name so the same Docker network is shared whether this file
+# is run standalone or via the root orchestrator (which `include`s it).
+networks:
+  timeflow_internal:
+    name: irn-log-horas_timeflow_internal

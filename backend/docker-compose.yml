@@ -1,0 +1,101 @@
+# Backend-only docker-compose. Use this when you want to iterate on the
+# .NET API in isolation — `docker compose up` brings up postgres + redis +
+# backend with nothing else. The root compose file (../docker-compose.yml)
+# `include`s this file so the whole stack still builds with one command.
+#
+# All env vars come from a sibling .env file (backend/.env). The root
+# .env is NOT auto-loaded when running from this directory; copy the
+# keys you need into backend/.env.
+
+services:
+  backend:
+    build:
+      context: .
+    container_name: timeflow-backend
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:5001
+      DATABASE_URL: Host=postgres;Port=5432;Database=timeflow;Username=timeflow;Password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in backend/.env}
+      REDIS_URL: redis:6379,password=${REDIS_PASSWORD:?REDIS_PASSWORD must be set in backend/.env}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in backend/.env (openssl rand -base64 32)}
+      VAULT_KEY: ${VAULT_KEY:?VAULT_KEY must be set in backend/.env (openssl rand -base64 32)}
+      # Comma-separated list of origins the SPA is served from. The JWT
+      # cookie is sent cross-origin, so the browser requires the server
+      # to whitelist these explicitly (no wildcards with credentials).
+      # Override per environment via backend/.env.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+      # Cache key namespace prefix — change per env to avoid collisions when
+      # multiple TimeFlow instances share a single Redis (we don't today,
+      # but cheap insurance). Default 'tf' matches the legacy `CACHE_NS`.
+      CACHE_NS: ${CACHE_NS:-tf}
+      # When 1, maps /api/_dev/phase4-smoke for the Phase 4 wiring probe.
+      # Leave UNSET in production.
+      DEV_SMOKE: ${DEV_SMOKE:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # 5001 is exposed for local debugging and for the root nginx proxy
+    # (see ../nginx/nginx.conf upstream `backend:5001`). Comment out the
+    # ports block in production if nginx is the only intended entry point.
+    ports:
+      - "5001:5001"
+    networks:
+      - timeflow_internal
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: timeflow-postgres
+    environment:
+      POSTGRES_USER: timeflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in backend/.env}
+      POSTGRES_DB: timeflow
+    volumes:
+      - timeflow_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timeflow -d timeflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    # NOT exposed to the host by default. Services on timeflow_internal
+    # reach it as `postgres:5432`. Uncomment the ports block below
+    # temporarily if you need to run `psql` or `dotnet ef` from the host.
+    # ports:
+    #   - "5432:5432"
+    networks:
+      - timeflow_internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: timeflow-redis
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in backend/.env}"]
+    volumes:
+      - timeflow_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in backend/.env}
+    restart: unless-stopped
+    networks:
+      - timeflow_internal
+
+# Volumes + network are NAMED explicitly so the same Docker resources
+# get reused whether you run `cd backend && docker compose up` (standalone)
+# or `docker compose up` from the repo root (which `include`s this file).
+# Without explicit names Docker would prefix with the current compose
+# project name, creating separate resources per invocation.
+volumes:
+  timeflow_postgres_data:
+    name: irn-log-horas_timeflow_postgres_data
+  timeflow_redis_data:
+    name: irn-log-horas_timeflow_redis_data
+
+networks:
+  timeflow_internal:
+    name: irn-log-horas_timeflow_internal

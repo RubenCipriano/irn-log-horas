@@ -1,0 +1,12 @@
+D:\Projects\irn-log-horas\backend\TimeFlow.Rbac\bin\Release\net8.0\TimeFlow.Rbac.deps.json
+D:\Projects\irn-log-horas\backend\TimeFlow.Rbac\bin\Release\net8.0\TimeFlow.Rbac.dll
+D:\Projects\irn-log-horas\backend\TimeFlow.Rbac\bin\Release\net8.0\TimeFlow.Rbac.pdb
+D:\Projects\irn-log-horas\backend\TimeFlow.Rbac\obj\Release\net8.0\TimeFlow.Rbac.GeneratedMSBuildEditorConfig.editorconfig
+D:\Projects\irn-log-horas\backend\TimeFlow.Rbac\obj\Release\net8.0\TimeFlow.Rbac.AssemblyInfoInputs.cache
+D:\Projects\irn-log-horas\backend\TimeFlow.Rbac\obj\Release\net8.0\TimeFlow.Rbac.AssemblyInfo.cs
+D:\Projects\irn-log-horas\backend\TimeFlow.Rbac\obj\Release\net8.0\TimeFlow.Rbac.csproj.CoreCompileInputs.cache
+D:\Projects\irn-log-horas\backend\TimeFlow.Rbac\obj\Release\net8.0\TimeFlow.Rbac.sourcelink.json
+D:\Projects\irn-log-horas\backend\TimeFlow.Rbac\obj\Release\net8.0\TimeFlow.Rbac.dll
+D:\Projects\irn-log-horas\backend\TimeFlow.Rbac\obj\Release\net8.0\refint\TimeFlow.Rbac.dll
+D:\Projects\irn-log-horas\backend\TimeFlow.Rbac\obj\Release\net8.0\TimeFlow.Rbac.pdb
+D:\Projects\irn-log-horas\backend\TimeFlow.Rbac\obj\Release\net8.0\ref\TimeFlow.Rbac.dll

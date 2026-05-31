@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "TimeFlow.Vault/1.0.0": {
+        "runtime": {
+          "TimeFlow.Vault.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "TimeFlow.Vault/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

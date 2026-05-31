@@ -6,7 +6,9 @@
       "Bash(npx next:*)",
       "Bash(xargs grep:*)",
       "Bash(cd /c/Users/ruben/Documents/\"Horas IRN\"/irn-log-horas)",
-      "Bash(xargs -I {} bash -c \"echo -n \"\"{} - \"\"; wc -l < \"\"{}\"\"\")"
+      "Bash(xargs -I {} bash -c \"echo -n \"\"{} - \"\"; wc -l < \"\"{}\"\"\")",
+      "Bash(grep -E '\\\\.\\(cs\\)$')",
+      "Bash(grep -v \"\\\\\\\\\\\\\\\\obj\\\\\\\\\\\\\\\\\")"
     ]
   }
 }

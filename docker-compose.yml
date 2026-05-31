@@ -1,28 +1,11 @@
-version: '3.8'
+# Root orchestrator. Brings up everything in both `backend/` and
+# `frontend/` with one command. Each side still works standalone (cd
+# into the folder, `docker compose up`) — this file just composes both.
+#
+# The volumes + networks inside the included files are NAMED so the
+# same Docker resources get reused whether you run from the root or
+# from inside one of the sub-folders.
 
-services:
-  website-log-horas:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: website-log-horas
-    ports:
-      - "3700:3700"
-    environment:
-      NODE_ENV: production
-      PORT: 3700
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3700"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    volumes:
-      - ./logs:/app/logs
-    networks:
-      - nginx_backend
-
-networks:
-  nginx_backend:
-    external: true
+include:
+  - backend/docker-compose.yml
+  - frontend/docker-compose.yml

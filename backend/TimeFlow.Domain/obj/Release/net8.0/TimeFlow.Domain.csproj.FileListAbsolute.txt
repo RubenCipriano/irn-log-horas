@@ -1,0 +1,12 @@
+D:\Projects\irn-log-horas\backend\TimeFlow.Domain\bin\Release\net8.0\TimeFlow.Domain.deps.json
+D:\Projects\irn-log-horas\backend\TimeFlow.Domain\bin\Release\net8.0\TimeFlow.Domain.dll
+D:\Projects\irn-log-horas\backend\TimeFlow.Domain\bin\Release\net8.0\TimeFlow.Domain.pdb
+D:\Projects\irn-log-horas\backend\TimeFlow.Domain\obj\Release\net8.0\TimeFlow.Domain.GeneratedMSBuildEditorConfig.editorconfig
+D:\Projects\irn-log-horas\backend\TimeFlow.Domain\obj\Release\net8.0\TimeFlow.Domain.AssemblyInfoInputs.cache
+D:\Projects\irn-log-horas\backend\TimeFlow.Domain\obj\Release\net8.0\TimeFlow.Domain.AssemblyInfo.cs
+D:\Projects\irn-log-horas\backend\TimeFlow.Domain\obj\Release\net8.0\TimeFlow.Domain.csproj.CoreCompileInputs.cache
+D:\Projects\irn-log-horas\backend\TimeFlow.Domain\obj\Release\net8.0\TimeFlow.Domain.sourcelink.json
+D:\Projects\irn-log-horas\backend\TimeFlow.Domain\obj\Release\net8.0\TimeFlow.Domain.dll
+D:\Projects\irn-log-horas\backend\TimeFlow.Domain\obj\Release\net8.0\refint\TimeFlow.Domain.dll
+D:\Projects\irn-log-horas\backend\TimeFlow.Domain\obj\Release\net8.0\TimeFlow.Domain.pdb
+D:\Projects\irn-log-horas\backend\TimeFlow.Domain\obj\Release\net8.0\ref\TimeFlow.Domain.dll

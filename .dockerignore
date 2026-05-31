@@ -1,0 +1,48 @@
+# Critical for the monorepo build: the host's node_modules contains
+# Windows-format workspace symlinks that overwrite the clean ones `npm ci`
+# creates inside the container — which is why @timeflow/* modules disappear
+# after `COPY . .`. Keep them out of the build context.
+node_modules
+**/node_modules
+
+# Build artifacts — regenerated inside the image, no reason to ship them.
+.next
+**/.next
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# Local state never destined for the image.
+.env
+.env.local
+.env.*.local
+
+# VCS + IDE noise.
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+
+# Local logs / dumps.
+logs
+*.log
+npm-debug.log*
+
+# OS junk.
+.DS_Store
+Thumbs.db
+
+# Docker scripts themselves — referenced from compose, no need in the image.
+deploy.sh
+deploy.bat
+docker-compose.yml
+Dockerfile
+
+# Repo metadata that doesn't belong in either app's runtime.
+README.md
+CLAUDE.md
+plans
+.claude
+
+# The drizzle/ migrations folder IS copied explicitly from the builder stage
+# in Dockerfile, so the .next exclusion above doesn't strip it.

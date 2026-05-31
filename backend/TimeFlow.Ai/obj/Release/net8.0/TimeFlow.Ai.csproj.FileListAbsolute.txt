@@ -1,0 +1,12 @@
+D:\Projects\irn-log-horas\backend\TimeFlow.Ai\bin\Release\net8.0\TimeFlow.Ai.deps.json
+D:\Projects\irn-log-horas\backend\TimeFlow.Ai\bin\Release\net8.0\TimeFlow.Ai.dll
+D:\Projects\irn-log-horas\backend\TimeFlow.Ai\bin\Release\net8.0\TimeFlow.Ai.pdb
+D:\Projects\irn-log-horas\backend\TimeFlow.Ai\obj\Release\net8.0\TimeFlow.Ai.GeneratedMSBuildEditorConfig.editorconfig
+D:\Projects\irn-log-horas\backend\TimeFlow.Ai\obj\Release\net8.0\TimeFlow.Ai.AssemblyInfoInputs.cache
+D:\Projects\irn-log-horas\backend\TimeFlow.Ai\obj\Release\net8.0\TimeFlow.Ai.AssemblyInfo.cs
+D:\Projects\irn-log-horas\backend\TimeFlow.Ai\obj\Release\net8.0\TimeFlow.Ai.csproj.CoreCompileInputs.cache
+D:\Projects\irn-log-horas\backend\TimeFlow.Ai\obj\Release\net8.0\TimeFlow.Ai.sourcelink.json
+D:\Projects\irn-log-horas\backend\TimeFlow.Ai\obj\Release\net8.0\TimeFlow.Ai.dll
+D:\Projects\irn-log-horas\backend\TimeFlow.Ai\obj\Release\net8.0\refint\TimeFlow.Ai.dll
+D:\Projects\irn-log-horas\backend\TimeFlow.Ai\obj\Release\net8.0\TimeFlow.Ai.pdb
+D:\Projects\irn-log-horas\backend\TimeFlow.Ai\obj\Release\net8.0\ref\TimeFlow.Ai.dll
