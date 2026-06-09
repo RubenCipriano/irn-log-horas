@@ -4,11 +4,16 @@
 # time compilation tweaks and copies everything required to run the host
 # into /app/publish.
 #
-# Stage 2 (aspnet runtime): slim ~120 MB final image with just the runtime.
-# Runs as a non-root `app` user (default in the alpine runtime image).
+# Stage 2 (aspnet runtime): Debian-based runtime image.
+#
+# NOTE: glibc (Debian), NOT alpine/musl. QuestPDF renders invoices through
+# SkiaSharp, whose native lib has no working linux-musl build — its startup
+# compatibility probe (triggered by setting QuestPDF.Settings.License) hard-
+# segfaults the process in ld-musl on alpine. The Debian image ships a
+# working glibc libSkiaSharp; it only needs libfontconfig1 at runtime.
 
 # --- build ---------------------------------------------------------------
-FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS build
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 
 # Copy solution + project files first so `dotnet restore` caches well — if
@@ -35,12 +40,16 @@ RUN dotnet publish TimeFlow.Api/TimeFlow.Api.csproj \
     /p:UseAppHost=false
 
 # --- runtime -------------------------------------------------------------
-FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 
-# Health check probes /api/health (anonymous endpoint). nginx and docker
-# both rely on this for upstream rotation + container restart.
-RUN apk add --no-cache wget
+# wget: health-check probe. libfontconfig1: SkiaSharp/QuestPDF native dep
+# (the glibc libSkiaSharp links it at load — without it QuestPDF's startup
+# probe throws). Health check probes /api/health (anonymous endpoint);
+# nginx and docker both rely on it for upstream rotation + container restart.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends wget libfontconfig1 \
+    && rm -rf /var/lib/apt/lists/*
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD wget --quiet --tries=1 -O /dev/null http://localhost:5001/api/health || exit 1
 
